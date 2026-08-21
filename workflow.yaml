@@ -1,0 +1,1109 @@
+# Agent Workflow DSL - Single Source of Truth
+# Corrected version: aggregate audit handoff, routed re-review loops, independent counters.
+#
+# Conventions:
+# - Forced-pass: when iteration >= max (3), the agent MUST set the forward-progress
+#   signal regardless of remaining issues. For most agents this is pass=true.
+#   For devops-infrastructure-engineer: deployment_complete=true.
+#   Unresolved issues are documented in the output report.
+# - Phase context: Phase 1 transitions (T23a/b/c) have phase: initial_audit_collect.
+#   Phase 2 transitions have process: <bug_fix_process> which implicitly marks them as
+#   verification-phase. The orchestrator uses incoming transition to determine phase.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# ORCHESTRATOR INSTRUCTIONS (for LLM-based orchestration via agent tool)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# How to determine the next agent after the current agent completes:
+#
+# 1. Read the agent's JSON result (status, artifacts, flags)
+# 2. Find ALL transitions where `from` = current_agent
+# 3. Evaluate conditions using the mapping below
+# 4. Launch the next agent via: agent tool with subagent_type = transition's `to`
+# 5. If multiple transitions match (parallel_start), launch ALL of them
+#
+# CONDITION EVALUATION RULES (map agent result → transition condition):
+#
+# ┌─────────────────────────────┬──────────────────────────────┬────────────────────────────────────┐
+# │ Current Agent               │ Transition                   │ Condition = TRUE when              │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ project-manager             │ T01 → architecture-planner   │ status = "pass"                    │
+# │ project-manager             │ T70_REV → tech-docs-writer   │ documentation_needs_revision = true│
+# │                             │                              │ AND documentation_iteration < 3    │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ architecture-planner        │ T12a → security-auditor      │ architecture doc mentions security │
+# │                             │                              │ requirements AND not all audits    │
+# │                             │                              │ returned yet                       │
+# │ architecture-planner        │ T12b → ui-ux-accessibility-specialist      │ architecture doc mentions UI needs │
+# │                             │                              │ AND not all audits returned yet    │
+# │ architecture-planner        │ T12c → data-engineering-architect      │ architecture doc mentions data/    │
+# │                             │                              │ pipeline needs AND not all audits  │
+# │                             │                              │ returned yet                       │
+# │ architecture-planner        │ T13 → code-implementer       │ all audits returned (or none       │
+# │                             │                              │ needed) — i.e. you have collected  │
+# │                             │                              │ all Phase 1 results                │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ security-auditor (Phase 1)  │ T23a → architecture-planner  │ always (any result) — collect audit│
+# │ ui-ux-accessibility-specialist (Phase 1)  │ T23b → architecture-planner  │ always (any result) — collect audit│
+# │ data-engineering-architect (Phase 1)  │ T23c → architecture-planner  │ always (any result) — collect audit│
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ security-auditor (Phase 2)  │ T_SEC_VERIFY → code-impl     │ findings NOT resolved AND iter < 3 │
+# │                             │ T_SEC_PASS → code-reviewer   │ security_verification_pass OR iter >= 3 │
+# │ ui-ux-accessibility-specialist (Phase 2)  │ T_UI_VERIFY → code-impl      │ findings NOT resolved AND iter < 3 │
+# │                             │ T_UI_PASS → code-reviewer    │ ui_verification_pass OR iter >= 3  │
+# │ data-engineering-architect (Phase 2)  │ T_DATA_VERIFY → code-impl    │ findings NOT resolved AND iter < 3 │
+# │                             │ T_DATA_PASS → code-reviewer  │ data_verification_pass OR iter >= 3 │
+# │ data-engineering-architect            │ T_DATA_TO_DEVOPS → devops    │ deployment_only = true             │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ code-implementer            │ T34 → code-reviewer          │ no fix flags present (initial impl │
+# │                             │                              │ or fixing_review)                  │
+# │                             │ T_CODE_TO_SEC → sec-auditor  │ security_fixes_complete = true     │
+# │                             │ T_CODE_TO_UI → ui-ux-spec    │ ui_fixes_complete = true           │
+# │                             │ T_CODE_TO_DATA → data-eng    │ data_fixes_complete = true         │
+# │                             │ T_CODE_TO_TEST → code-rev    │ test_fixes_complete = true         │
+# │                             │ T_CODE_TO_PERF → code-rev    │ perf_fixes_complete = true         │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ code-reviewer               │ T43 → code-implementer       │ issues_found = true AND iter < 3   │
+# │                             │ T45a → test-engineer         │ code_review_pass = true OR iter >= 3 │
+# │                             │ T45b → performance-analyst   │ code_review_pass = true OR iter >= 3 │
+# │                             │ T_DEVOPS_REVIEW_PASS → devops│ infrastructure_review_pass = true  │
+# │                             │ T_DEVOPS_REVIEW_FAIL → devops│ infrastructure_review_pass = false │
+# │                             │                              │ AND iter < 3                     │
+# │                             │ T_DEVOPS_REVIEW_FORCE_PASS   │ infrastructure_review_pass = false │
+# │                             │ → devops                     │ AND iter >= 3                    │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ comprehensive-test-engineer │ T51_3 → code-implementer     │ bugs_found = true AND iter < 3     │
+# │                             │ T51_6 → devops-infra         │ tests_pass = true OR iter >= 3     │
+# │ performance-analyst         │ T52_3 → code-implementer     │ bottlenecks_found AND iter < 3     │
+# │                             │ T52_6 → devops-infra         │ performance_pass = true OR iter >= 3 │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ devops-infrastructure-eng   │ T67 → tech-docs-writer       │ (deployment_complete AND NOT       │
+# │                             │                              │ infra_needs_review) OR iter >= 3    │
+# │                             │ T_DEVOPS_REVIEW → code-rev   │ infrastructure needs review AND    │
+# │                             │                              │ infra_review_iter < 3              │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ tech-docs-writer            │ T70 → project-manager        │ status = "pass" (docs complete)    │
+# │                             │                              │ OR documentation_iteration >= 3    │
+# └─────────────────────────────┴──────────────────────────────┴────────────────────────────────────┘
+#
+# KEY RULES:
+# - Phase 1 vs Phase 2: Phase 1 audits (T12a/b/c → T23a/b/c) happen BEFORE implementation.
+#   Phase 2 verification (T_SEC_VERIFY/PASS, T_UI_VERIFY/PASS, T_DATA_VERIFY/PASS) happens AFTER
+#   code-implementer fixes. Determine phase from the incoming transition to the audit agent.
+# - parallel_start: launch BOTH agents (test + performance). Use agent tool twice.
+# - parallel_join: devops starts only when BOTH test AND performance branches complete.
+# - When iteration >= max: force forward progress regardless of issues (document unresolved issues).
+# - code-implementer state: determined by incoming transition. Use state to pick correct outgoing
+#   transition (T34 vs T_CODE_TO_SEC vs T_CODE_TO_UI vs T_CODE_TO_DATA vs T_CODE_TO_TEST vs T_CODE_TO_PERF).
+
+agents:
+- id: business-analyst
+  name: business-analyst
+  max_iterations: null
+  escalation_path: null
+  description: Requirements gathering, TZ creation, project context
+- id: project-manager
+  name: project-manager
+  max_iterations: null
+  escalation_path: null
+  entry_point: true
+  description: Project management, backlog, prioritization
+- id: architecture-planner
+  name: architecture-planner
+  max_iterations: null
+  escalation_path: null
+  description: Architecture, planning, documentation
+- id: security-auditor
+  name: security-auditor
+  max_iterations: 3
+  escalation_path: architecture-planner
+  escalation_final_destination: code-reviewer
+  description: Security audit, vulnerabilities
+- id: ui-ux-accessibility-specialist
+  name: ui-ux-accessibility-specialist
+  max_iterations: 3
+  escalation_path: architecture-planner
+  escalation_final_destination: code-reviewer
+  description: UI specifications, accessibility, UX
+- id: data-engineering-architect
+  name: data-engineering-architect
+  max_iterations: 3
+  escalation_path: architecture-planner
+  escalation_final_destination: code-reviewer
+  description: ETL, SQL, data pipelines
+- id: code-implementer
+  name: code-implementer
+  max_iterations: null
+  escalation_path: null
+  description: Code implementation, refactoring
+  note: Iteration counter is reset after each successful review pass
+  states:
+  - id: implementing
+    description: Initial implementation from architecture documents
+    transitions:
+    - T34
+  - id: fixing_security
+    description: Fixing security vulnerabilities identified by security-auditor
+    transitions:
+    - T_CODE_TO_SEC
+  - id: fixing_ui
+    description: Fixing UI/UX issues identified by ui-ux-accessibility-specialist
+    transitions:
+    - T_CODE_TO_UI
+  - id: fixing_data
+    description: Fixing data architecture issues identified by data-engineering-architect
+    transitions:
+    - T_CODE_TO_DATA
+  - id: fixing_review
+    description: Fixing issues identified by code-reviewer (T43 loop)
+    transitions:
+    - T34
+  - id: fixing_test
+    description: Fixing bugs identified by comprehensive-test-engineer — returns to code-reviewer for
+      re-review
+    transitions:
+    - T_CODE_TO_TEST
+  - id: fixing_perf
+    description: Fixing performance bottlenecks identified by performance-analyst — returns to code-reviewer
+      for re-review
+    transitions:
+    - T_CODE_TO_PERF
+- id: code-reviewer
+  name: code-reviewer
+  max_iterations: 3
+  escalation_path: architecture-planner  # advisory only — no actual transition; code proceeds to T45a/T45b
+  escalation_final_destination: comprehensive-test-engineer
+  description: Independent code review, code quality
+- id: comprehensive-test-engineer
+  name: comprehensive-test-engineer
+  max_iterations: 3
+  escalation_path: project-manager
+  escalation_final_destination: devops-infrastructure-engineer
+  description: Testing, QA
+- id: performance-analyst
+  name: performance-analyst
+  max_iterations: 3
+  escalation_path: architecture-planner
+  escalation_final_destination: devops-infrastructure-engineer
+  description: Profiling, load testing
+- id: devops-infrastructure-engineer
+  name: devops-infrastructure-engineer
+  max_iterations: null
+  escalation_path: project-manager
+  escalation_final_destination: tech-docs-writer
+  description: CI/CD, infrastructure, deployment
+- id: tech-docs-writer
+  name: tech-docs-writer
+  max_iterations: 3
+  escalation_path: project-manager
+  escalation_final_destination: project-manager
+  description: Documentation, guides, ADRs
+transitions:
+- id: T01
+  from: project-manager
+  to: architecture-planner
+  condition: backlog_approved
+  artifacts:
+  - product_backlog
+  - user_stories
+  - sprint_backlog
+  type: serial
+- id: T12a
+  from: architecture-planner
+  to: security-auditor
+  condition: security_requirements_exist AND NOT all_audits_complete
+  artifacts:
+  - system_architecture_document
+  - adrs
+  - implementation_plan
+  - component_specifications
+  - data_flow_diagram
+  type: conditional
+- id: T12b
+  from: architecture-planner
+  to: ui-ux-accessibility-specialist
+  condition: ui_needed AND NOT all_audits_complete
+  artifacts:
+  - system_architecture_document
+  - adrs
+  - implementation_plan
+  - component_specifications
+  - data_flow_diagram
+  type: conditional
+- id: T12c
+  from: architecture-planner
+  to: data-engineering-architect
+  condition: data_design_needed AND NOT all_audits_complete
+  artifacts:
+  - system_architecture_document
+  - adrs
+  - implementation_plan
+  - component_specifications
+  - data_flow_diagram
+  type: conditional
+- id: T23a
+  from: security-auditor
+  to: architecture-planner
+  condition: security_audit_complete_with_findings OR security_audit_complete_no_findings
+  artifacts:
+  - threat_model
+  - security_requirements
+  - security_checklist
+  - security_findings_report
+  type: serial
+  phase: initial_audit_collect
+- id: T23b
+  from: ui-ux-accessibility-specialist
+  to: architecture-planner
+  condition: ui_audit_complete_with_findings OR ui_audit_complete_no_findings
+  artifacts:
+  - ui_component_specifications
+  - user_flow_diagrams
+  - accessibility_requirements
+  - ui_findings_report
+  type: serial
+  phase: initial_audit_collect
+- id: T23c
+  from: data-engineering-architect
+  to: architecture-planner
+  condition: (data_audit_complete_with_findings OR data_audit_complete_no_findings) AND NOT deployment_only
+  artifacts:
+  - pipeline_configurations
+  - data_models
+  - optimized_queries
+  - infrastructure_requirements
+  - data_findings_report
+  type: serial
+  phase: initial_audit_collect
+- id: T13
+  from: architecture-planner
+  to: code-implementer
+  condition: no_specialized_audits_needed OR all_audits_complete
+  artifacts:
+  - system_architecture_document
+  - adrs
+  - implementation_plan
+  - component_specifications
+  - data_flow_diagram
+  - threat_model
+  - security_requirements
+  - security_checklist
+  - security_findings_report
+  - ui_component_specifications
+  - user_flow_diagrams
+  - accessibility_requirements
+  - ui_findings_report
+  - pipeline_configurations
+  - data_models
+  - optimized_queries
+  - infrastructure_requirements
+  - data_findings_report
+  artifact_groups:
+    must_read:
+    - system_architecture_document
+    - implementation_plan
+    - component_specifications
+    - adrs
+    reference:
+    - data_flow_diagram
+    - threat_model
+    - security_requirements
+    - security_checklist
+    - security_findings_report
+    - ui_component_specifications
+    - user_flow_diagrams
+    - accessibility_requirements
+    - ui_findings_report
+    optional:
+    - pipeline_configurations
+    - data_models
+    - optimized_queries
+    - infrastructure_requirements
+    - data_findings_report
+  type: serial
+  audit_tracking:
+  - security-auditor
+  - ui-ux-accessibility-specialist
+  - data-engineering-architect
+  aggregate_handoff: true
+- id: T34
+  from: code-implementer
+  to: code-reviewer
+  condition: no_fix_flags_present
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  type: serial
+  state: implementing
+- id: T43
+  from: code-reviewer
+  to: code-implementer
+  condition: issues_found AND code_review_iteration < 3
+  artifacts:
+  - code_review_report
+  - quality_metrics
+  - improvement_recommendations
+  type: loop
+  process: code_review_bug_fixes
+- id: T45a
+  from: code-reviewer
+  to: comprehensive-test-engineer
+  condition: code_review_pass OR code_review_iteration >= 3
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  - code_review_report
+  - quality_metrics
+  - improvement_recommendations
+  - system_architecture_document
+  - adrs
+  type: parallel_start
+- id: T45b
+  from: code-reviewer
+  to: performance-analyst
+  condition: code_review_pass OR code_review_iteration >= 3
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  - code_review_report
+  - quality_metrics
+  - improvement_recommendations
+  - system_architecture_document
+  - adrs
+  type: parallel_start
+- id: T51_3
+  from: comprehensive-test-engineer
+  to: code-implementer
+  condition: bugs_found AND test_iteration < 3
+  artifacts:
+  - testing_report
+  - bug_reports
+  type: loop
+  process: testing_bug_fixes
+- id: T51_6
+  from: comprehensive-test-engineer
+  to: devops-infrastructure-engineer
+  condition: tests_pass OR test_iteration >= 3
+  artifacts:
+  - testing_report
+  - coverage_metrics
+  - tested_application
+  type: parallel_join
+- id: T52_3
+  from: performance-analyst
+  to: code-implementer
+  condition: bottlenecks_found AND performance_iteration < 3
+  artifacts:
+  - profiling_report
+  - optimization_recommendations
+  type: loop
+  process: performance_optimization
+- id: T52_6
+  from: performance-analyst
+  to: devops-infrastructure-engineer
+  condition: performance_pass OR performance_iteration >= 3
+  artifacts:
+  - profiling_report
+  - load_test_results
+  - optimized_application
+  type: parallel_join
+- id: T67
+  from: devops-infrastructure-engineer
+  to: tech-docs-writer
+  condition: (deployment_complete AND NOT infrastructure_code_needs_review) OR infrastructure_review_iteration >= 3
+  artifacts:
+  - container_images
+  - deployment_manifests
+  - ci_cd_pipeline
+  - monitoring_dashboards
+  type: serial
+- id: T70
+  from: tech-docs-writer
+  to: project-manager
+  condition: documentation_complete OR documentation_iteration >= 3
+  artifacts:
+  - api_documentation
+  - user_guides
+  - runbooks
+  - release_notes
+  type: serial
+- id: T70_REV
+  from: project-manager
+  to: tech-docs-writer
+  condition: documentation_needs_revision AND documentation_iteration < 3
+  artifacts:
+  - revision_requests
+  - feedback_notes
+  type: loop
+  process: documentation_review
+- id: T_CODE_TO_SEC
+  from: code-implementer
+  to: security-auditor
+  condition: security_fixes_complete
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  type: loop
+  process: security_bug_fixes
+  state: fixing_security
+- id: T_CODE_TO_UI
+  from: code-implementer
+  to: ui-ux-accessibility-specialist
+  condition: ui_fixes_complete
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  type: loop
+  process: ui_ux_bug_fixes
+  state: fixing_ui
+- id: T_CODE_TO_DATA
+  from: code-implementer
+  to: data-engineering-architect
+  condition: data_fixes_complete
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  type: loop
+  process: data_engineering_bug_fixes
+  state: fixing_data
+- id: T_SEC_VERIFY
+  from: security-auditor
+  to: code-implementer
+  condition: security_findings_not_resolved AND security_verification_iteration < 3
+  artifacts:
+  - threat_model
+  - security_requirements
+  - security_checklist
+  - security_findings_report
+  type: loop
+  process: security_bug_fixes
+  phase: verification
+- id: T_SEC_PASS
+  from: security-auditor
+  to: code-reviewer
+  condition: security_verification_pass OR security_verification_iteration >= 3
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  - threat_model
+  - security_requirements
+  - security_checklist
+  - security_findings_report
+  type: serial
+  process: security_bug_fixes
+  phase: verification
+- id: T_UI_VERIFY
+  from: ui-ux-accessibility-specialist
+  to: code-implementer
+  condition: ui_findings_not_resolved AND ui_verification_iteration < 3
+  artifacts:
+  - ui_component_specifications
+  - user_flow_diagrams
+  - accessibility_requirements
+  - ui_findings_report
+  type: loop
+  process: ui_ux_bug_fixes
+  phase: verification
+- id: T_UI_PASS
+  from: ui-ux-accessibility-specialist
+  to: code-reviewer
+  condition: ui_verification_pass OR ui_verification_iteration >= 3
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  - ui_component_specifications
+  - user_flow_diagrams
+  - accessibility_requirements
+  - ui_findings_report
+  type: serial
+  process: ui_ux_bug_fixes
+  phase: verification
+- id: T_DATA_VERIFY
+  from: data-engineering-architect
+  to: code-implementer
+  condition: data_findings_not_resolved AND data_verification_iteration < 3
+  artifacts:
+  - pipeline_configurations
+  - data_models
+  - optimized_queries
+  - infrastructure_requirements
+  - data_findings_report
+  type: loop
+  process: data_engineering_bug_fixes
+  phase: verification
+- id: T_DATA_PASS
+  from: data-engineering-architect
+  to: code-reviewer
+  condition: data_verification_pass OR data_verification_iteration >= 3
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  - pipeline_configurations
+  - data_models
+  - optimized_queries
+  - infrastructure_requirements
+  - data_findings_report
+  type: serial
+  process: data_engineering_bug_fixes
+  phase: verification
+- id: T_DATA_TO_DEVOPS
+  from: data-engineering-architect
+  to: devops-infrastructure-engineer
+  condition: deployment_only
+  artifacts:
+  - pipeline_configurations
+  - data_models
+  - infrastructure_requirements
+  type: conditional
+  process: data_engineering_bug_fixes
+- id: T_CODE_TO_TEST
+  from: code-implementer
+  to: code-reviewer
+  condition: test_fixes_complete
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  type: loop
+  process: testing_bug_fixes
+  state: fixing_test
+- id: T_CODE_TO_PERF
+  from: code-implementer
+  to: code-reviewer
+  condition: perf_fixes_complete
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  type: loop
+  process: performance_optimization
+  state: fixing_perf
+- id: T_DEVOPS_REVIEW
+  from: devops-infrastructure-engineer
+  to: code-reviewer
+  condition: infrastructure_code_needs_review AND infrastructure_review_iteration < 3
+  artifacts:
+  - dockerfiles
+  - terraform_configs
+  - kubernetes_manifests
+  - ci_cd_configs
+  type: loop
+  process: infrastructure_review
+- id: T_DEVOPS_REVIEW_FAIL
+  from: code-reviewer
+  to: devops-infrastructure-engineer
+  condition: not infrastructure_review_pass AND infrastructure_review_iteration < 3
+  artifacts:
+  - code_review_report
+  type: loop
+  process: infrastructure_review
+- id: T_DEVOPS_REVIEW_PASS
+  from: code-reviewer
+  to: devops-infrastructure-engineer
+  condition: infrastructure_review_pass
+  artifacts:
+  - code_review_report
+  type: serial
+- id: T_DEVOPS_REVIEW_FORCE_PASS
+  from: code-reviewer
+  to: devops-infrastructure-engineer
+  condition: not infrastructure_review_pass AND infrastructure_review_iteration >= 3
+  artifacts:
+  - code_review_report
+  type: serial
+processes:
+- id: main_workflow
+  name: Main Development Workflow
+  description: Primary development flow. Specialized Phase 1 audits return to architecture-planner for
+    aggregation before implementation.
+  steps:
+  - project-manager
+  - architecture-planner
+  - '[security-auditor | ui-ux-accessibility-specialist | data-engineering-architect]'
+  - architecture-planner
+  - code-implementer
+  - code-reviewer
+  - '[comprehensive-test-engineer || performance-analyst]'
+  - devops-infrastructure-engineer
+  - tech-docs-writer
+  - project-manager
+- id: security_bug_fixes
+  name: Security Bug Fixes
+  description: After security audit finds issues, code is fixed and re-verified
+  steps:
+  - security-auditor
+  - code-implementer
+  - security-auditor
+  - code-reviewer
+  - '[comprehensive-test-engineer || performance-analyst]'
+  - devops-infrastructure-engineer
+  - tech-docs-writer
+  - project-manager
+- id: testing_bug_fixes
+  name: Testing Bug Fixes
+  description: After testing finds bugs, code is fixed, re-reviewed by code-reviewer, and then re-tested.
+  steps:
+  - comprehensive-test-engineer
+  - code-implementer
+  - code-reviewer
+  - '[comprehensive-test-engineer || performance-analyst]'
+  - devops-infrastructure-engineer
+  - tech-docs-writer
+  - project-manager
+- id: code_review_bug_fixes
+  name: Code Review Bug Fixes
+  description: After code review finds issues, code is fixed and re-reviewed
+  steps:
+  - code-reviewer
+  - code-implementer
+  - code-reviewer
+  - '[comprehensive-test-engineer || performance-analyst]'
+  - devops-infrastructure-engineer
+  - tech-docs-writer
+  - project-manager
+- id: data_engineering_bug_fixes
+  name: Data Engineering Bug Fixes
+  description: After data architecture review finds issues, code is fixed and re-verified
+  steps:
+  - data-engineering-architect
+  - code-implementer
+  - data-engineering-architect
+  - code-reviewer
+  - '[comprehensive-test-engineer || performance-analyst]'
+  - devops-infrastructure-engineer
+  - tech-docs-writer
+  - project-manager
+- id: performance_optimization
+  name: Performance Optimization
+  description: After performance analysis finds bottlenecks, code is optimized, re-reviewed by code-reviewer,
+    and then re-tested/profiled.
+  steps:
+  - performance-analyst
+  - code-implementer
+  - code-reviewer
+  - '[comprehensive-test-engineer || performance-analyst]'
+  - devops-infrastructure-engineer
+  - tech-docs-writer
+  - project-manager
+- id: ui_ux_bug_fixes
+  name: UI/UX Bug Fixes
+  description: After UI/UX audit finds issues, code is fixed and re-verified
+  steps:
+  - ui-ux-accessibility-specialist
+  - code-implementer
+  - ui-ux-accessibility-specialist
+  - code-reviewer
+  - '[comprehensive-test-engineer || performance-analyst]'
+  - devops-infrastructure-engineer
+  - tech-docs-writer
+  - project-manager
+- id: documentation_review
+  name: Documentation Review
+  description: After documentation is created, project-manager reviews and requests revisions (max 3 iterations).
+  steps:
+  - project-manager
+  - tech-docs-writer
+  - project-manager
+- id: infrastructure_review
+  name: Infrastructure Review
+  description: After devops creates infrastructure code, code-reviewer reviews it (max 3 iterations).
+  steps:
+  - devops-infrastructure-engineer
+  - code-reviewer
+  - devops-infrastructure-engineer
+quality_metrics:
+- agent: project-manager
+  metrics:
+  - name: Backlog items with acceptance criteria
+    target: 100%
+  - name: Sprint goal defined
+    target: 'true'
+  - name: Dependencies documented
+    target: 100%
+- agent: architecture-planner
+  metrics:
+  - name: Architecture document complete
+    target: 'true'
+  - name: ADRs created for key decisions
+    target: 100%
+  - name: Security requirements defined
+    target: 'true'
+  - name: Performance SLOs set
+    target: 'true'
+  - name: Single points of failure identified
+    target: 100%
+- agent: code-implementer
+  metrics:
+  - name: Build success
+    target: 'true'
+  - name: Unit tests pass
+    target: 100%
+  - name: Self-code review completed
+    target: 'true'
+  - name: Project conventions followed
+    target: 'true'
+- agent: code-reviewer
+  metrics:
+  - name: Critical issues
+    target: '0'
+  - name: High priority issues
+    target: ≤3
+- agent: comprehensive-test-engineer
+  metrics:
+  - name: Test coverage
+    target: '>80%'
+  - name: Critical bugs
+    target: '0'
+  - name: High priority bugs
+    target: ≤5
+- agent: performance-analyst
+  metrics:
+  - name: Performance
+    target: Meets SLO
+  - name: Load test success rate
+    target: ≥95%
+- agent: security-auditor
+  metrics:
+  - name: Critical vulnerabilities
+    target: '0'
+  - name: High priority vulnerabilities
+    target: ≤3
+- agent: ui-ux-accessibility-specialist
+  metrics:
+  - name: WCAG AA violations
+    target: '0'
+  - name: Critical UI issues
+    target: '0'
+- agent: data-engineering-architect
+  metrics:
+  - name: Data quality score
+    target: ≥95%
+  - name: Pipeline execution time
+    target: Meets SLA
+- agent: devops-infrastructure-engineer
+  metrics:
+  - name: Deployment success rate
+    target: ≥99%
+  - name: Rollback success rate
+    target: ≥99%
+- agent: tech-docs-writer
+  metrics:
+  - name: Documentation coverage
+    target: ≥90%
+  - name: Documentation accuracy
+    target: ≥95%
+file_conventions:
+  directories:
+    docs:
+      description: All documentation artifacts
+      subdirectories:
+      - context: Project profile, stakeholders, infrastructure, constraints, existing systems, non-functional requirements
+      - requirements: Initial requirements/TZ — files are immutable (never modified)
+      - architecture: Architecture documents, ADRs, data flow diagrams, component specifications
+        nested:
+        - adrs: ADR-<NNN>_<slug>.md files
+        - components: Per-component documentation
+      - security: Threat models, security requirements, checklists, findings
+        nested:
+        - findings: PHASE1-<NNN>_<slug>.md (initial audit), PHASE2-<NNN>_<slug>.md (verification)
+      - ui-ux: UI specifications, accessibility reports, user flow diagrams
+        nested:
+        - findings: PHASE1/PHASE2 audit findings
+      - data: Data models, pipeline configurations, optimized queries, data dictionary
+        nested:
+        - findings: PHASE1/PHASE2 audit findings
+      - testing: Test plans, test reports, coverage reports
+        nested:
+        - bug-reports: BUG-<NNN>_<slug>.md files
+      - performance: Profiling reports, load test results, benchmarks, optimization log
+      - devops: Deployment manifests, CI/CD configs, monitoring dashboards
+        nested:
+        - dockerfiles: Docker build files
+        - terraform: IaC configurations
+        - kubernetes: K8s manifests
+      - guides: API docs, user guides, runbooks, tutorials, release notes
+        nested:
+        - api: API documentation, openapi.yaml
+        - user: User guides
+        - runbooks: Operational runbooks
+        - tutorials: Step-by-step tutorials
+        - release-notes: CHANGELOG.md, RELEASE-<version>.md
+      - reviews: Code review reports (review-<TSK-ID>.md)
+    tasks:
+      description: Task management
+      subdirectories:
+      - active: Tasks currently in progress
+      - done: Completed tasks
+      - archive: Cancelled or frozen tasks
+      root_files:
+      - backlog.md: Single backlog file for all tasks across all sprints
+    test:
+      description: Test files
+      subdirectories:
+      - unit: Unit tests (code-implementer)
+      - integration: Integration tests (comprehensive-test-engineer)
+      - e2e: End-to-end tests
+      - performance: Performance/load tests (performance-analyst)
+      - fixtures: Test data
+  naming_rules:
+    task_id:
+      format: TSK-<NNN>_<slug>.md
+      description: Use TSK- prefix (not T-) to avoid conflict with transition IDs (T01, T34)
+      example: TSK-001_reorganize-project-structure.md
+    adr:
+      format: ADR-<NNN>_<slug>.md
+      example: ADR-001_use-microservices-architecture.md
+    bug_report:
+      format: BUG-<NNN>_<slug>.md
+      example: BUG-001_login-race-condition.md
+    review:
+      format: review-<TSK-ID>.md
+      example: review-TSK-001.md
+    runbook:
+      format: runbook-<NNN>_<slug>.md
+      example: runbook-001_database-failover.md
+    test_file:
+      format: test_<component>_<scenario>.<ext>
+      example: test_auth_login_success.py
+  task_statuses:
+  - BACKLOG: In queue, not yet started
+  - IN_PROGRESS: Currently being worked on by assigned agent
+  - REVIEW: Completed, awaiting review by project-manager
+  - DONE: Accepted and completed
+  - BLOCKED: Blocked by external dependency or issue
+  - CANCELLED: Cancelled by project-manager
+  modification_rules:
+  - rule: Never create a file from scratch if it already exists — append to the appropriate section
+  - rule: New documents must include header metadata (author, date, version)
+  - rule: docs/requirements/ files are immutable — never modify initial TZ files
+  - rule: When passing artifacts, always reference the file path in docs/
+  - rule: project-manager creates task files in tasks/active/ and updates tasks/backlog.md
+  - rule: Other agents update their task file in tasks/active/ and signal project-manager via handoff
+      protocol
+  agent_file_responsibilities:
+  - agent: project-manager
+    creates:
+    - tasks/backlog.md (maintains)
+    - tasks/active/TSK-<NNN>_<slug>.md (creates new tasks)
+    reads:
+    - tasks/backlog.md (reads current status)
+    - tasks/active/ (reads task files for assigned agents)
+    moves:
+    - tasks/active/ → tasks/done/ (on completion)
+    - tasks/active/ → tasks/archive/ (on cancellation)
+  - agent: architecture-planner
+    creates:
+    - docs/architecture/system-architecture.md
+    - docs/architecture/implementation-plan.md
+    - docs/architecture/adrs/ADR-<NNN>_<slug>.md
+    - docs/architecture/data-flow.md
+    - docs/architecture/component-specifications.md
+    reads:
+    - docs/requirements/ (initial TZ)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: security-auditor
+    creates:
+    - docs/security/threat-model.md
+    - docs/security/security-requirements.md
+    - docs/security/security-checklist.md
+    - docs/security/findings/PHASE*-*.md
+    reads:
+    - docs/architecture/ (architecture documents)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: ui-ux-accessibility-specialist
+    creates:
+    - docs/ui-ux/ui-spec.md
+    - docs/ui-ux/accessibility-report.md
+    - docs/ui-ux/user-flow-diagrams.md
+    - docs/ui-ux/findings/PHASE*-*.md
+    reads:
+    - docs/architecture/ (architecture documents)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: data-engineering-architect
+    creates:
+    - docs/data/pipeline-config.md
+    - docs/data/data-models.md
+    - docs/data/optimized-queries.md
+    - docs/data/infrastructure-requirements.md
+    - docs/data/findings/PHASE*-*.md
+    reads:
+    - docs/architecture/ (architecture documents)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: code-implementer
+    creates:
+    - Source code (project-specific location)
+    - test/unit/test_<component>_<scenario>.py
+    reads:
+    - docs/architecture/ (architecture documents)
+    - docs/security/ (security requirements)
+    - docs/ui-ux/ (UI specifications)
+    - docs/data/ (data models, pipeline configs)
+    - docs/reviews/ (code review reports)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: code-reviewer
+    creates:
+    - docs/reviews/review-<TSK-ID>.md
+    reads:
+    - Source code (from code-implementer)
+    - docs/architecture/adrs/ (ADRs)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: comprehensive-test-engineer
+    creates:
+    - test/integration/test_<feature>_<scenario>.py
+    - test/e2e/test_<scenario>.py
+    - docs/testing/test-plan.md
+    - docs/testing/test-report.md
+    - docs/testing/bug-reports/BUG-<NNN>_<slug>.md
+    reads:
+    - Source code and unit tests
+    - docs/requirements/ (for expected behavior)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: performance-analyst
+    creates:
+    - test/performance/test_<scenario>.py
+    - docs/performance/profiling-report.md
+    - docs/performance/load-test-results.md
+    reads:
+    - Source code and unit tests
+    - docs/requirements/ (performance SLOs)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: devops-infrastructure-engineer
+    creates:
+    - docs/devops/deployment-manifest.md
+    - docs/devops/ci-cd-pipeline.md
+    - docs/devops/dockerfiles/
+    - docs/devops/monitoring-dashboard.md
+    reads:
+    - docs/testing/ (test reports)
+    - docs/performance/ (load test results)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  - agent: tech-docs-writer
+    creates:
+    - docs/guides/api-docs.md
+    - docs/guides/user-guide.md
+    - docs/guides/runbooks/runbook-<NNN>_<slug>.md
+    - docs/guides/release-notes.md
+    reads:
+    - All docs/ subdirectories (collects all artifacts)
+    - docs/requirements/ (initial TZ)
+    updates:
+    - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
+  task_file_template: '# TSK-<NNN>: <Title>
+
+
+    **Status**: BACKLOG | IN_PROGRESS | REVIEW | DONE | BLOCKED | CANCELLED
+
+    **Priority**: HIGH | MEDIUM | LOW
+
+    **Assigned**: <agent-id>
+
+    **Created**: YYYY-MM-DD
+
+    **Deadline**: YYYY-MM-DD
+
+
+    ## Description
+
+    <Detailed description of the task>
+
+
+    ## Artifacts
+
+    - `docs/<path>/<file>.md` — description
+
+    - `test/<path>/<file>.py` — description
+
+
+    ## Checklist
+
+    - [ ] <Checklist item 1>
+
+    - [ ] <Checklist item 2>
+
+
+    ## History
+
+    - YYYY-MM-DD: Created (project-manager)
+
+    - YYYY-MM-DD: Started work (<agent-id>)
+
+    - YYYY-MM-DD: Completed (<agent-id>)
+
+    '
+  backlog_template: '# Product Backlog
+
+
+    | ID | Title | Description | Priority | Status | Assigned Agent | Created | Deadline |
+
+    |----|-------|-------------|----------|--------|----------------|---------|----------|
+
+    | TSK-001 | Example task | Description | HIGH | BACKLOG | architecture-planner | 2026-04-27 | 2026-05-01
+    |
+
+
+    ## Status Legend
+
+    - **BACKLOG** — in queue
+
+    - **IN_PROGRESS** — in progress
+
+    - **REVIEW** — under review
+
+    - **DONE** — completed
+
+    - **BLOCKED** — blocked
+
+    - **CANCELLED** — cancelled
+
+    '
+iteration_counters:
+  code_review_iteration:
+    owner: code-reviewer
+    scope: application_code_review
+    max: 3
+  infrastructure_review_iteration:
+    owner: code-reviewer
+    scope: infrastructure_code_review
+    max: 3
+  security_verification_iteration:
+    owner: security-auditor
+    scope: security_bug_fixes
+    max: 3
+  ui_verification_iteration:
+    owner: ui-ux-accessibility-specialist
+    scope: ui_ux_bug_fixes
+    max: 3
+  data_verification_iteration:
+    owner: data-engineering-architect
+    scope: data_engineering_bug_fixes
+    max: 3
+  test_iteration:
+    owner: comprehensive-test-engineer
+    scope: testing_bug_fixes
+    max: 3
+  performance_iteration:
+    owner: performance-analyst
+    scope: performance_optimization
+    max: 3
+  documentation_iteration:
+    owner: tech-docs-writer
+    scope: documentation_review
+    max: 3
