@@ -49,28 +49,50 @@ def validate_workflow(workflow):
         if not workflow[key]:
             raise ValueError(f"workflow.yaml section '{key}' is empty")
 
-    # Validate agents have required fields
-    for agent in workflow["agents"]:
+    agents = workflow["agents"]
+    transitions = workflow["transitions"]
+    counters = workflow["iteration_counters"]
+
+    # Collect agent IDs for reference validation
+    agent_ids = set()
+
+    # Validate agents have required fields and no duplicates
+    for agent in agents:
         if "id" not in agent:
             raise ValueError(f"Agent missing 'id' field: {agent}")
         if "name" not in agent:
             raise ValueError(f"Agent '{agent.get('id')}' missing 'name' field")
+        if agent["id"] in agent_ids:
+            raise ValueError(f"Duplicate agent id: '{agent['id']}'")
+        agent_ids.add(agent["id"])
 
-    # Validate transitions have required fields
-    for transition in workflow["transitions"]:
+    # Validate transitions have required fields and reference valid agents
+    transition_ids = set()
+    for transition in transitions:
         if "id" not in transition:
             raise ValueError(f"Transition missing 'id' field: {transition}")
         if "from" not in transition:
             raise ValueError(f"Transition '{transition.get('id')}' missing 'from' field")
         if "to" not in transition:
             raise ValueError(f"Transition '{transition.get('id')}' missing 'to' field")
+        if transition["id"] in transition_ids:
+            raise ValueError(f"Duplicate transition id: '{transition['id']}'")
+        transition_ids.add(transition["id"])
+        if transition["from"] not in agent_ids:
+            raise ValueError(f"Transition '{transition['id']}' references unknown agent: '{transition['from']}'")
+        if transition["to"] not in agent_ids:
+            raise ValueError(f"Transition '{transition['id']}' references unknown agent: '{transition['to']}'")
 
     # Validate iteration_counters have required fields
-    for counter_id, counter_data in workflow["iteration_counters"].items():
+    for counter_id, counter_data in counters.items():
         if "owner" not in counter_data:
             raise ValueError(f"Counter '{counter_id}' missing 'owner' field")
         if "max" not in counter_data:
             raise ValueError(f"Counter '{counter_id}' missing 'max' field")
+        if "description" not in counter_data:
+            raise ValueError(f"Counter '{counter_id}' missing 'description' field")
+        if counter_data["owner"] not in agent_ids:
+            raise ValueError(f"Counter '{counter_id}' references unknown owner: '{counter_data['owner']}'")
 
 
 def resolve_includes(content):

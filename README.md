@@ -26,8 +26,8 @@ Each platform has its own manifest format with specific fields:
 | Platform | Manifest File | Required Fields | Optional Fields |
 |----------|---------------|-----------------|-----------------|
 | Gemini CLI | `gemini-extension.json` | `name`, `version`, `description`, `contextFileName` | — |
-| Codex | `.codex-plugin/plugin.json` | `name`, `version`, `description` | `homepage`, `repository`, `license`, `keywords` |
-| Cursor | `.cursor-plugin/plugin.json` | `name`, `version`, `description` | `displayName`, `skills`, `homepage`, `repository`, `license`, `keywords` |
+| Codex | `.codex-plugin/plugin.json` | `name`, `version`, `description` | `author`, `homepage`, `repository`, `license`, `keywords`, `skills`, `interface` |
+| Cursor | `.cursor-plugin/plugin.json` | `name`, `version`, `description` | `author`, `displayName`, `skills`, `homepage`, `repository`, `license`, `keywords` |
 | Hermes | `.hermes-plugin/plugin.yaml` | `name`, `version`, `description` | `author`, `provides_hooks` |
 | Qwen Code | auto-generated | — | — |
 
@@ -49,6 +49,7 @@ Each platform has its own manifest format with specific fields:
 
 ```
 wf-orc/
+├── LICENSE                    # MIT License
 ├── gemini-extension.json      # Gemini CLI manifest
 ├── .cursor-plugin/plugin.json # Cursor manifest
 ├── .codex-plugin/plugin.json  # Codex manifest
@@ -306,12 +307,14 @@ Run project verification (see [Project Verification](#project-verification) belo
 Update version in all plugin manifests:
 
 ```bash
-# Update version in all manifests (example: 0.4.7 → 0.4.8)
-sed -i 's/"version": "0.4.7"/"version": "0.4.8"/g' \
+# Update version in JSON manifests (example: 0.5.1 → 0.5.2)
+sed -i 's/"version": "0.5.1"/"version": "0.5.2"/g' \
   gemini-extension.json \
   .codex-plugin/plugin.json \
-  .cursor-plugin/plugin.json \
-  .hermes-plugin/plugin.yaml
+  .cursor-plugin/plugin.json
+
+# Update version in YAML manifest
+sed -i 's/^version: 0.5.1/version: 0.5.2/' .hermes-plugin/plugin.yaml
 ```
 
 ### Step 7: Commit
