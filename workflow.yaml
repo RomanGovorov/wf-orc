@@ -44,17 +44,17 @@
 # │                             │                              │ all Phase 1 results                │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ security-auditor (Phase 1)  │ T23a → architecture-planner  │ always (any result) — collect audit│
-# │ ui-ux-specialist (Phase 1)  │ T23b → architecture-planner  │ always (any result) — collect audit│
-# │ data-eng-architect (Phase 1)│ T23c → architecture-planner  │ always (any result, except deployment_only) — collect audit│
+# │ ui-ux-accessibility-specialist (Phase 1)  │ T23b → architecture-planner  │ always (any result) — collect audit│
+# │ data-engineering-architect (Phase 1)│ T23c → architecture-planner  │ always (any result, except deployment_only) — collect audit│
 # │                             │                              │ NOTE: if deployment_only=true, use T_DATA_TO_DEVOPS instead (skip to devops)
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ security-auditor (Phase 2)  │ T_SEC_VERIFY → code-implementer     │ findings NOT resolved AND iter < 3 │
 # │                             │ T_SEC_PASS → code-reviewer   │ security_verification_pass OR iter >= 3 │
-# │ ui-ux-specialist (Phase 2)  │ T_UI_VERIFY → code-implementer      │ findings NOT resolved AND iter < 3 │
+# │ ui-ux-accessibility-specialist (Phase 2)  │ T_UI_VERIFY → code-implementer      │ findings NOT resolved AND iter < 3 │
 # │                             │ T_UI_PASS → code-reviewer    │ ui_verification_pass OR iter >= 3  │
-# │ data-eng-architect (Phase 2)│ T_DATA_VERIFY → code-implementer    │ findings NOT resolved AND iter < 3 │
+# │ data-engineering-architect (Phase 2)│ T_DATA_VERIFY → code-implementer    │ findings NOT resolved AND iter < 3 │
 # │                             │ T_DATA_PASS → code-reviewer  │ data_verification_pass OR iter >= 3 │
-# │ data-eng-architect          │ T_DATA_TO_DEVOPS → devops    │ deployment_only = true             │
+# │ data-engineering-architect          │ T_DATA_TO_DEVOPS → devops-infrastructure-engineer │ deployment_only = true │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ code-implementer            │ T34 → code-reviewer          │ no fix flags present (initial impl │
 # │                             │                              │ or fixing_review)                  │
@@ -77,11 +77,11 @@
 # │                             │ → devops-infrastructure-engineer            │ AND iter >= 3                    │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ comprehensive-test-engineer │ T51_3 → code-implementer     │ bugs_found = true AND iter < 3     │
-# │                             │ T51_6 → devops               │ tests_pass = true OR iter >= 3     │
+# │                             │ T51_6 → devops-infrastructure-engineer │ tests_pass = true OR iter >= 3 │
 # │ performance-analyst         │ T52_3 → code-implementer     │ bottlenecks_found AND iter < 3     │
-# │                             │ T52_6 → devops               │ performance_pass = true OR iter >= 3 │
+# │                             │ T52_6 → devops-infrastructure-engineer │ performance_pass = true OR iter >= 3 │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ devops-infra-engineer       │ T67 → tech-docs-writer       │ (deployment_complete AND NOT       │
+# │ devops-infrastructure-engineer       │ T67 → tech-docs-writer       │ (deployment_complete AND NOT       │
 # │                             │                              │ infrastructure_code_needs_review) OR iter >= 3    │
 # │                             │ T_DEVOPS_REVIEW → code-reviewer   │ infrastructure_code_needs_review = true AND    │
 # │                             │                              │ infrastructure_review_iteration < 3              │
@@ -675,7 +675,7 @@ processes:
   - architecture-planner
   - code-implementer
   - code-reviewer
-  - '[comprehensive-test-engineer || performance-analyst]'
+  - '[comprehensive-test-engineer + performance-analyst]'
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
@@ -687,7 +687,7 @@ processes:
   - code-implementer
   - security-auditor
   - code-reviewer
-  - '[comprehensive-test-engineer || performance-analyst]'
+  - '[comprehensive-test-engineer + performance-analyst]'
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
@@ -698,7 +698,7 @@ processes:
   - comprehensive-test-engineer
   - code-implementer
   - code-reviewer
-  - '[comprehensive-test-engineer || performance-analyst]'
+  - '[comprehensive-test-engineer + performance-analyst]'
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
@@ -709,7 +709,7 @@ processes:
   - code-reviewer
   - code-implementer
   - code-reviewer
-  - '[comprehensive-test-engineer || performance-analyst]'
+  - '[comprehensive-test-engineer + performance-analyst]'
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
@@ -721,7 +721,7 @@ processes:
   - code-implementer
   - data-engineering-architect
   - code-reviewer
-  - '[comprehensive-test-engineer || performance-analyst]'
+  - '[comprehensive-test-engineer + performance-analyst]'
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
@@ -733,7 +733,7 @@ processes:
   - performance-analyst
   - code-implementer
   - code-reviewer
-  - '[comprehensive-test-engineer || performance-analyst]'
+  - '[comprehensive-test-engineer + performance-analyst]'
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
@@ -745,7 +745,7 @@ processes:
   - code-implementer
   - ui-ux-accessibility-specialist
   - code-reviewer
-  - '[comprehensive-test-engineer || performance-analyst]'
+  - '[comprehensive-test-engineer + performance-analyst]'
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager

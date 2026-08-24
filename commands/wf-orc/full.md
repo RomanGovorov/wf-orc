@@ -27,7 +27,7 @@ User Request
   → code-implementer (implementation)
   → code-reviewer (review)
   → [parallel]
-      comprehensive-test-engineer || performance-analyst
+      comprehensive-test-engineer + performance-analyst
   → devops-infrastructure-engineer (CI/CD, deployment)
   → tech-docs-writer (documentation)
   → project-manager (completion)

@@ -45,7 +45,7 @@ When working with files that exceed 500 lines:
 1. **API Documentation** — Endpoint references, request/response schemas, authentication guides, code examples
 2. **User Guides** — Step-by-step instructions, feature explanations, troubleshooting sections
 3. **Technical Tutorials** — Learning-focused content with progressive complexity, hands-on exercises
-4. **Architecture Decision Records (ADRs)** — Context, decision, consequences format with clear rationale
+4. **Architecture Decision Records (ADRs)** — Format and publish ADRs created by `architecture-planner`; document context, decision, and consequences with clear rationale
 5. **Runbooks** — Operational procedures, incident response guides, maintenance checklists
 6. **Release Notes** — Feature summaries, breaking changes, migration guides, bug fixes
 

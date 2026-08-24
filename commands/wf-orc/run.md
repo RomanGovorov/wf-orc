@@ -72,13 +72,13 @@ Workflow ends when `tech-docs-writer` → `project-manager` (T70). Mark all task
 |---|---|---|---|
 | project-manager | T01 | architecture-planner | `backlog_approved = true` |
 | project-manager | T70_REV | tech-docs-writer | `documentation_needs_revision = true` AND `documentation_iteration < 3` |
-| architecture-planner | T12a | security-auditor | Architecture doc mentions security requirements AND security-auditor NOT already dispatched AND not all audits returned yet |
-| architecture-planner | T12b | ui-ux-accessibility-specialist | Architecture doc mentions UI needs AND ui-ux-accessibility-specialist NOT already dispatched AND not all audits returned yet |
-| architecture-planner | T12c | data-engineering-architect | Architecture doc mentions data/pipeline needs AND data-engineering-architect NOT already dispatched AND not all audits returned yet |
+| architecture-planner | T12a | security-auditor | `security_requirements_exist` AND NOT `all_audits_complete` |
+| architecture-planner | T12b | ui-ux-accessibility-specialist | `ui_needed` AND NOT `all_audits_complete` |
+| architecture-planner | T12c | data-engineering-architect | `data_design_needed` AND NOT `all_audits_complete` |
 | architecture-planner | T13 | code-implementer | All audits returned (or none needed) — you have collected all Phase 1 results |
 | security-auditor (Phase 1) | T23a | architecture-planner | **Always** (any result) — return audit to architecture-planner |
 | ui-ux-accessibility-specialist (Phase 1) | T23b | architecture-planner | **Always** (any result) — return audit to architecture-planner |
-| data-engineering-architect (Phase 1) | T23c | architecture-planner | **Always** (any result) — return audit to architecture-planner |
+| data-engineering-architect (Phase 1) | T23c | architecture-planner | **Always** (any result, except `deployment_only = true`) — return audit to architecture-planner. If `deployment_only = true`, use T_DATA_TO_DEVOPS instead |
 | security-auditor (Phase 2) | T_SEC_VERIFY | code-implementer | Findings NOT resolved AND `security_verification_iteration < 3` |
 | security-auditor (Phase 2) | T_SEC_PASS | code-reviewer | `security_verification_pass = true` OR `security_verification_iteration >= 3` |
 | ui-ux-accessibility-specialist (Phase 2) | T_UI_VERIFY | code-implementer | Findings NOT resolved AND `ui_verification_iteration < 3` |
@@ -86,7 +86,7 @@ Workflow ends when `tech-docs-writer` → `project-manager` (T70). Mark all task
 | data-engineering-architect (Phase 2) | T_DATA_VERIFY | code-implementer | Findings NOT resolved AND `data_verification_iteration < 3` |
 | data-engineering-architect (Phase 2) | T_DATA_PASS | code-reviewer | `data_verification_pass = true` OR `data_verification_iteration >= 3` |
 | data-engineering-architect | T_DATA_TO_DEVOPS | devops-infrastructure-engineer | `deployment_only = true` |
-| code-implementer | T34 | code-reviewer | `status = "pass"` AND no fix flags present |
+| code-implementer | T34 | code-reviewer | `no_fix_flags_present` |
 | code-implementer | T_CODE_TO_SEC | security-auditor | `security_fixes_complete = true` |
 | code-implementer | T_CODE_TO_UI | ui-ux-accessibility-specialist | `ui_fixes_complete = true` |
 | code-implementer | T_CODE_TO_DATA | data-engineering-architect | `data_fixes_complete = true` |

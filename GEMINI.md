@@ -24,7 +24,7 @@ User Request
   → architecture-planner (aggregates)
   → code-implementer
   → code-reviewer
-  → [test || performance] (parallel)
+  → [test + performance] (parallel)
   → devops-infrastructure-engineer
   → tech-docs-writer
   → project-manager (done)
