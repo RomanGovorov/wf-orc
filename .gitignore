@@ -2,5 +2,3 @@
 .vscode/
 .env
 docs/
-node_modules/
-bun.lockb
