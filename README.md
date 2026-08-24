@@ -14,6 +14,7 @@ Packages a complete orchestrator + 12 specialized agents + workflow definition i
 | **Cursor** | ✅ Skills support | Via plugin marketplace |
 | **Codex** | ✅ Skills support | Via `~/.agents/skills/` |
 | **Hermes** | ✅ Skills support | Via plugin marketplace |
+| **OpenCode** | ✅ Full support (agents, skills, commands) | Via JS plugin or `opencode.json` |
 
 ## Features
 
@@ -28,15 +29,17 @@ Packages a complete orchestrator + 12 specialized agents + workflow definition i
 
 ```
 wf-orc/
+├── package.json               # Entry point for OpenCode plugin
 ├── gemini-extension.json      # Gemini CLI manifest
 ├── .claude-plugin/plugin.json # Claude Code manifest
 ├── .cursor-plugin/plugin.json # Cursor manifest
 ├── .codex-plugin/plugin.json  # Codex manifest
 ├── .hermes-plugin/plugin.json # Hermes manifest
+├── .opencode/plugins/wf-orc.js # OpenCode JS plugin (agent converter + skill/command registrar)
 ├── GEMINI.md                  # Orchestrator context for Gemini CLI / Codex / Cursor
 ├── AGENTS.md                  # Context pointer for Codex/Cursor
 ├── workflow.yaml              # Single source of truth for transitions
-├── commands/                  # Qwen Code commands
+├── commands/                  # Qwen Code / OpenCode commands
 │   └── wf-orc/
 │       ├── run.md             # /wf-orc:run
 │       ├── research.md        # /wf-orc:research
@@ -87,6 +90,23 @@ Install via platform's plugin marketplace or copy `skills/` to your project.
 ### Codex
 
 Copy `skills/` to `~/.agents/skills/wf-orc/` for global access.
+
+### OpenCode
+
+```bash
+# Option 1: Git dependency (add to opencode.json)
+{
+  "plugin": ["wf-orc@git+https://github.com/<user>/wf-orc.git"]
+}
+
+# Option 2: Local symlink
+ln -s /path/to/wf-orc/.opencode/plugins/wf-orc.js .opencode/plugins/wf-orc.js
+
+# Option 3: Copy plugin file
+cp /path/to/wf-orc/.opencode/plugins/wf-orc.js .opencode/plugins/
+```
+
+The JS plugin automatically registers all 12 agents as subagents, 3 commands (`/wf-orc-run`, `/wf-orc-research`, `/wf-orc-full`), and all skills.
 
 ## Usage
 
@@ -160,10 +180,11 @@ User Request
 ## How It Works
 
 1. **Skills** (`skills/*/SKILL.md`) — Agent Skills standard, works on all platforms
-2. **Commands** (`commands/wf-orc/*.md`) — Qwen Code specific slash commands
-3. **Agents** (`agents/*.md`) — Agent prompts loaded by orchestrator
+2. **Commands** (`commands/wf-orc/*.md`) — Qwen Code / OpenCode slash commands
+3. **Agents** (`agents/*.md`) — Agent prompts loaded by orchestrator (converted for OpenCode via JS plugin)
 4. **Context** (`GEMINI.md`) — Orchestrator context for Gemini CLI / Codex / Cursor
 5. **Workflow** (`workflow.yaml`) — Single source of truth for transitions and conditions
+6. **OpenCode Plugin** (`.opencode/plugins/wf-orc.js`) — JS plugin that converts agents, registers skills and commands for OpenCode
 
 ## License
 
