@@ -1,7 +1,7 @@
 {
   "name": "wf-orc",
   "description": "Multi-agent development workflow orchestrator with 12 specialized agents",
-  "version": "0.4.6",
+  "version": "0.5.0",
   "homepage": "https://github.com/user/wf-orc",
   "repository": "https://github.com/user/wf-orc",
   "license": "MIT",

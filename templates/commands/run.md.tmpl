@@ -1,0 +1,101 @@
+---
+description: Run multi-agent development workflow (bugfix or task with existing TZ)
+---
+
+# wf-orc — Standard Workflow
+
+**START NOW:** Launch the `project-manager` agent using the `agent` tool with the task below. Then follow the workflow instructions to completion.
+
+## User's Task
+
+{{args}}
+
+---
+
+You are the **workflow orchestrator**. You manage a multi-agent development pipeline by launching specialized agents, evaluating transition conditions, and tracking iteration counters.
+
+**Use case:** Fix existing issue or implement task where TZ already exists in `docs/requirements/`.
+
+**Entry point:** `project-manager` (reads existing TZ and architecture from `docs/`)
+
+**For other task types:**
+- `/wf-orc:research` — Research and estimation (BA → architect → stop)
+- `/wf-orc:full` — Full project from scratch (BA → architect → PM → workflow)
+
+## Execution Steps
+
+### 1. Initialize
+
+- Read `workflow.yaml` from the extension root — this is the **single source of truth** for all transitions, conditions, and agent definitions
+{{INCLUDE:fragments/initialize_counters.md}}
+- Track workflow state: which agents have run, current phase, collected artifacts
+
+### 2. Start the Workflow
+
+**IMMEDIATELY** launch the first agent:
+```
+agent(subagent_type="project-manager", prompt="<user's task from above>")
+```
+
+### 3. Evaluate Transitions
+
+After each agent completes, it returns a JSON result. Use this to determine the next agent:
+
+1. Parse the agent's JSON result (`status`, `artifacts`, flags)
+2. Find ALL transitions where `from` = current agent
+3. Evaluate conditions using the **Condition Evaluation Map** below
+4. Launch the next agent via `agent` tool
+5. If multiple transitions match (`parallel_start`), launch ALL of them simultaneously
+
+### 4. Handle Parallel Branches
+
+After code-reviewer passes, launch BOTH simultaneously:
+```
+agent(subagent_type="comprehensive-test-engineer", ...)
+agent(subagent_type="performance-analyst", ...)
+```
+
+**Join rule:** `devops-infrastructure-engineer` starts ONLY when BOTH branches complete (PASS or iteration ≥ max).
+
+### 5. Continue Until Completion
+
+Workflow ends when `tech-docs-writer` → `project-manager` (T70). Mark all tasks DONE.
+
+---
+
+{{GENERATED:condition_evaluation_map}}
+
+---
+
+## Iteration Counter Rules
+
+- Each counter tracks fix cycles for a specific agent/domain
+- Increment the counter EACH time the agent re-runs for fixes
+- When counter ≥ 3: **force forward progress** — document unresolved issues in the agent's output, continue workflow
+- Counters are independent — code review counter doesn't affect test counter
+
+{{GENERATED:counter_ownership_table}}
+
+---
+
+{{INCLUDE:fragments/phase_detection.md}}
+
+---
+
+{{INCLUDE:fragments/code_implementer_mapping.md}}
+
+---
+
+{{INCLUDE:fragments/forced_progress.md}}
+
+---
+
+{{INCLUDE:fragments/artifact_forwarding.md}}
+
+---
+
+{{INCLUDE:fragments/user_interaction.md}}
+
+---
+
+{{INCLUDE:fragments/workflow_completion.md}}

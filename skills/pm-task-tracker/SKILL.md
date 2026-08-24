@@ -35,6 +35,8 @@ All write operations require the `X-API-Key` header:
 X-API-Key: ${UI_PM_API_KEY}
 ```
 
+> **Security note:** Do not use `set -x` when executing curl commands with API key — it will log the key to shell output. Use `set +x` before curl if debug mode is enabled.
+
 ## Operations
 
 ### Pattern 1: Create Project
@@ -57,18 +59,23 @@ When a task transitions from `BACKLOG` to `IN_PROGRESS`:
 ```bash
 ASSIGNEE=$(git config user.name 2>/dev/null | tr -d '\n')
 ASSIGNEE=${ASSIGNEE:-project-manager}
+# Escape special characters for JSON (quotes, backslashes)
+ASSIGNEE_ESCAPED=$(printf '%s' "$ASSIGNEE" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
+# Use heredoc for JSON body to avoid exposing data in process list
 curl -s -X POST "${UI_PM_URL}/api/tasks" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: ${UI_PM_API_KEY}" \
-  -d "{
-    \"projectId\": \"<project-uuid>\",
-    \"title\": \"TSK-001: Task title\",
-    \"description\": \"Task description\",
-    \"status\": \"in_work\",
-    \"priority\": \"medium\",
-    \"assignee\": \"${ASSIGNEE}\"
-  }"
+  -d @- <<EOF
+{
+  "projectId": "<project-uuid>",
+  "title": "TSK-001: Task title",
+  "description": "Task description",
+  "status": "in_work",
+  "priority": "medium",
+  "assignee": "${ASSIGNEE_ESCAPED}"
+}
+EOF
 ```
 
 Response contains `id` (UUID) — save it in the task file:

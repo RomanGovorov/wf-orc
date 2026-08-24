@@ -1,0 +1,4 @@
+- Initialize iteration counters (all start at 0):
+  - `code_review_iteration`, `test_fix_review_iteration`, `perf_fix_review_iteration`, `infrastructure_review_iteration`
+  - `security_verification_iteration`, `ui_verification_iteration`, `data_verification_iteration`
+  - `test_iteration`, `performance_iteration`, `documentation_iteration`

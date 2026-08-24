@@ -41,7 +41,10 @@
 # │                             │                                       │ returned yet                       │
 # │ architecture-planner        │ T13 → code-implementer       │ all audits returned (or none       │
 # │                             │                              │ needed) — i.e. you have collected  │
-# │                             │                              │ all Phase 1 results                │
+# │                             │                              │ all Phase 1 results.               │
+# │                             │                              │ NOTE: if data went to devops       │
+# │                             │                              │ (deployment_only=true), treat data │
+# │                             │                              │ audit as complete for T13 purposes │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ security-auditor (Phase 1)  │ T23a → architecture-planner  │ always (any result) — collect audit│
 # │ ui-ux-accessibility-specialist (Phase 1)  │ T23b → architecture-planner  │ always (any result) — collect audit│
@@ -65,8 +68,10 @@
 # │                             │ T_CODE_TO_PERF → code-reviewer    │ perf_fixes_complete = true         │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ code-reviewer               │ T43 → code-implementer       │ issues_found = true AND iter < 3   │
-# │                             │ T43_TEST → code-implementer  │ test_fix_review = true AND iter < 3│
-# │                             │ T43_PERF → code-implementer  │ perf_fix_review = true AND iter < 3│
+# │                             │ T43_TEST → code-implementer  │ test_fix_review = true AND         │
+# │                             │                              │ test_fix_review_iteration < 3      │
+# │                             │ T43_PERF → code-implementer  │ perf_fix_review = true AND         │
+# │                             │                              │ perf_fix_review_iteration < 3      │
 # │                             │ T45a → comprehensive-test-engineer         │ code_review_pass = true OR iter >= 3 │
 # │                             │ T45b → performance-analyst   │ code_review_pass = true OR iter >= 3 │
 # │                             │ T_DEVOPS_REVIEW_PASS         │ infrastructure_review_pass = true  │
@@ -100,10 +105,20 @@
 # - code-implementer state: determined by incoming transition. Use state to pick correct outgoing
 #   transition (T34 vs T_CODE_TO_SEC vs T_CODE_TO_UI vs T_CODE_TO_DATA vs T_CODE_TO_TEST vs T_CODE_TO_PERF).
 
+# Agent tools configuration:
+# - `tools` (allowlist): Agent can ONLY use listed tools. Used for agents with limited scope.
+# - `disallowedTools` (denylist): Agent can use ALL tools EXCEPT listed. Used for agents needing broad access
+#   (code-implementer, test-engineer, performance-analyst, devops) — they need many tools but must not
+#   launch sub-agents or use browser automation.
+# - `escalation_path` and `escalation_final_destination` are metadata-only fields for documentation.
+#   The orchestrator uses transitions, not these fields, for routing.
+# - `approvalMode` in agent frontmatter is platform-specific (Qwen Code):
+#   `auto-edit` = agent can edit files without user approval for each change.
+
 agents:
 - id: business-analyst
   name: business-analyst
-  max_iterations: null
+  max_iterations: null  # No iteration counter — limited by maxTurns: 80 in agent frontmatter
   escalation_path: null
   description: Requirements gathering, TZ creation, project context
   note: Entry point for /wf-orc:full and /wf-orc:research only — not part of standard workflow
@@ -113,6 +128,7 @@ agents:
   escalation_path: null
   entry_point: true
   description: Project management, backlog, prioritization
+  note: Has run_shell_command for pm-task-tracker skill (curl to external PM API)
 - id: architecture-planner
   name: architecture-planner
   max_iterations: null
@@ -149,9 +165,6 @@ agents:
     incoming_transition: T13
     transitions:
     - T34
-    - T_CODE_TO_SEC
-    - T_CODE_TO_UI
-    - T_CODE_TO_DATA
   - id: fixing_security
     description: Fixing security vulnerabilities identified by security-auditor
     incoming_transition: T_SEC_VERIFY
@@ -188,7 +201,7 @@ agents:
   name: code-reviewer
   max_iterations: 3
   escalation_path: null  # No escalation — after code-reviewer, workflow proceeds to T45a/T45b (test/performance)
-  escalation_final_destination: comprehensive-test-engineer
+  escalation_final_destination: comprehensive-test-engineer  # Note: parallel_start launches BOTH test + performance
   description: Independent code review, code quality
 - id: comprehensive-test-engineer
   name: comprehensive-test-engineer
@@ -206,7 +219,6 @@ agents:
   name: devops-infrastructure-engineer
   max_iterations: null
   escalation_path: null  # No escalation — after devops-infrastructure-engineer, workflow proceeds to T67/T_DEVOPS_REVIEW
-  escalation_final_destination: tech-docs-writer
   description: CI/CD, infrastructure, deployment
 - id: tech-docs-writer
   name: tech-docs-writer
@@ -294,7 +306,7 @@ transitions:
 - id: T13
   from: architecture-planner
   to: code-implementer
-  condition: no_specialized_audits_needed OR all_audits_complete
+  condition: no_specialized_audits_needed OR all_audits_complete OR (all_non_data_audits_complete AND deployment_only)
   artifacts:
   - system_architecture_document
   - adrs
@@ -345,7 +357,7 @@ transitions:
 - id: T34
   from: code-implementer
   to: code-reviewer
-  condition: no_fix_flags_present
+  condition: no_fix_flags_present  # Implicit: true when none of security/ui/data/test/perf_fixes_complete are set
   artifacts:
   - source_code
   - unit_tests
@@ -362,10 +374,11 @@ transitions:
   - improvement_recommendations
   type: loop
   process: code_review_bug_fixes
+  state: fixing_review
 - id: T43_TEST
   from: code-reviewer
   to: code-implementer
-  condition: test_fix_review AND code_review_iteration < 3
+  condition: test_fix_review AND test_fix_review_iteration < 3
   artifacts:
   - code_review_report
   - quality_metrics
@@ -376,7 +389,7 @@ transitions:
 - id: T43_PERF
   from: code-reviewer
   to: code-implementer
-  condition: perf_fix_review AND code_review_iteration < 3
+  condition: perf_fix_review AND perf_fix_review_iteration < 3
   artifacts:
   - code_review_report
   - quality_metrics
@@ -524,6 +537,7 @@ transitions:
   type: loop
   process: security_bug_fixes
   phase: verification
+  state: fixing_security
 - id: T_SEC_PASS
   from: security-auditor
   to: code-reviewer
@@ -551,6 +565,7 @@ transitions:
   type: loop
   process: ui_ux_bug_fixes
   phase: verification
+  state: fixing_ui
 - id: T_UI_PASS
   from: ui-ux-accessibility-specialist
   to: code-reviewer
@@ -579,6 +594,7 @@ transitions:
   type: loop
   process: data_engineering_bug_fixes
   phase: verification
+  state: fixing_data
 - id: T_DATA_PASS
   from: data-engineering-architect
   to: code-reviewer
@@ -604,7 +620,6 @@ transitions:
   - data_models
   - infrastructure_requirements
   type: conditional
-  process: main_workflow
   phase: initial_audit_collect
 - id: T_CODE_TO_TEST
   from: code-implementer
@@ -666,13 +681,16 @@ transitions:
 processes:
 - id: main_workflow
   name: Main Development Workflow
-  description: Primary development flow. Specialized Phase 1 audits return to architecture-planner for
-    aggregation before implementation.
+  description: >
+    Primary development flow. Specialized Phase 1 audits return to architecture-planner for
+    aggregation before implementation. Exception: when data-engineering-architect returns deployment_only=true,
+    it bypasses architecture-planner and goes directly to devops (T_DATA_TO_DEVOPS). In this case, T13 treats
+    data audit as complete.
   steps:
   - project-manager
   - architecture-planner
   - '[security-auditor | ui-ux-accessibility-specialist | data-engineering-architect]'
-  - architecture-planner
+  - 'architecture-planner (or devops if data deployment_only)'
   - code-implementer
   - code-reviewer
   - '[comprehensive-test-engineer + performance-analyst]'
@@ -767,29 +785,29 @@ quality_metrics:
 - agent: project-manager
   metrics:
   - name: Backlog items with acceptance criteria
-    target: 100%
+    target: '100%'
   - name: Sprint goal defined
     target: 'true'
   - name: Dependencies documented
-    target: 100%
+    target: '100%'
 - agent: architecture-planner
   metrics:
   - name: Architecture document complete
     target: 'true'
   - name: ADRs created for key decisions
-    target: 100%
+    target: '100%'
   - name: Security requirements defined
     target: 'true'
   - name: Performance SLOs set
     target: 'true'
   - name: Single points of failure identified
-    target: 100%
+    target: '100%'
 - agent: code-implementer
   metrics:
   - name: Build success
     target: 'true'
   - name: Unit tests pass
-    target: 100%
+    target: '100%'
   - name: Self-code review completed
     target: 'true'
   - name: Project conventions followed
@@ -799,7 +817,7 @@ quality_metrics:
   - name: Critical issues
     target: '0'
   - name: High priority issues
-    target: ≤3
+    target: '≤3'
 - agent: comprehensive-test-engineer
   metrics:
   - name: Test coverage
@@ -807,19 +825,19 @@ quality_metrics:
   - name: Critical bugs
     target: '0'
   - name: High priority bugs
-    target: ≤5
+    target: '≤5'
 - agent: performance-analyst
   metrics:
   - name: Performance
-    target: Meets SLO
+    target: 'Meets SLO'
   - name: Load test success rate
-    target: ≥95%
+    target: '≥95%'
 - agent: security-auditor
   metrics:
   - name: Critical vulnerabilities
     target: '0'
   - name: High priority vulnerabilities
-    target: ≤3
+    target: '≤3'
 - agent: ui-ux-accessibility-specialist
   metrics:
   - name: WCAG AA violations
@@ -829,21 +847,21 @@ quality_metrics:
 - agent: data-engineering-architect
   metrics:
   - name: Data quality score
-    target: ≥95%
+    target: '≥95%'
   - name: Pipeline execution time
-    target: Meets SLA
+    target: 'Meets SLA'
 - agent: devops-infrastructure-engineer
   metrics:
   - name: Deployment success rate
-    target: ≥99%
+    target: '≥99%'
   - name: Rollback success rate
-    target: ≥99%
+    target: '≥99%'
 - agent: tech-docs-writer
   metrics:
   - name: Documentation coverage
-    target: ≥90%
+    target: '≥90%'
   - name: Documentation accuracy
-    target: ≥95%
+    target: '≥95%'
 file_conventions:
   directories:
     docs:
@@ -1122,31 +1140,49 @@ iteration_counters:
     owner: code-reviewer
     scope: application_code_review
     max: 3
+    description: code-reviewer finds issues → code-implementer fixes → code-reviewer re-reviews
+  test_fix_review_iteration:
+    owner: code-reviewer
+    scope: test_fix_review
+    max: 3
+    description: code-reviewer reviews test fixes → code-implementer re-fixes → code-reviewer re-reviews
+  perf_fix_review_iteration:
+    owner: code-reviewer
+    scope: performance_fix_review
+    max: 3
+    description: code-reviewer reviews perf fixes → code-implementer re-fixes → code-reviewer re-reviews
   infrastructure_review_iteration:
     owner: code-reviewer
     scope: infrastructure_code_review
     max: 3
+    description: code-reviewer reviews devops infra code → devops fixes → code-reviewer re-reviews
   security_verification_iteration:
     owner: security-auditor
     scope: security_bug_fixes
     max: 3
+    description: security-auditor Phase 2 finds issues → code-implementer fixes → security-auditor re-verifies
   ui_verification_iteration:
     owner: ui-ux-accessibility-specialist
     scope: ui_ux_bug_fixes
     max: 3
+    description: ui-ux-specialist Phase 2 finds issues → code-implementer fixes → ui-ux-specialist re-verifies
   data_verification_iteration:
     owner: data-engineering-architect
     scope: data_engineering_bug_fixes
     max: 3
+    description: data-architect Phase 2 finds issues → code-implementer fixes → data-architect re-verifies
   test_iteration:
     owner: comprehensive-test-engineer
     scope: testing_bug_fixes
     max: 3
+    description: test-engineer finds bugs → code-implementer fixes → code-reviewer → test-engineer re-tests
   performance_iteration:
     owner: performance-analyst
     scope: performance_optimization
     max: 3
+    description: performance-analyst finds bottlenecks → code-implementer fixes → code-reviewer → performance-analyst re-profiles
   documentation_iteration:
     owner: tech-docs-writer
     scope: documentation_review
     max: 3
+    description: project-manager requests doc revision → tech-docs-writer revises → project-manager re-reviews

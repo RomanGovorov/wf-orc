@@ -32,37 +32,9 @@ User Request
 
 *This shows the standard workflow (`/wf-orc:run`). Research and Full workflows start with `business-analyst` — see Quick Start table above.*
 
-## Agents
+{{GENERATED:agents_table}}
 
-| Agent | Role |
-|-------|------|
-| `business-analyst` | Requirements gathering, TZ creation, project context |
-| `project-manager` | Project management, backlog, prioritization |
-| `architecture-planner` | Architecture, planning, documentation |
-| `security-auditor` | Security audit, vulnerabilities |
-| `ui-ux-accessibility-specialist` | UI specifications, accessibility, UX |
-| `data-engineering-architect` | ETL, SQL, data pipelines |
-| `code-implementer` | Code implementation, refactoring |
-| `code-reviewer` | Independent code review, code quality |
-| `comprehensive-test-engineer` | Testing, QA |
-| `performance-analyst` | Profiling, load testing |
-| `devops-infrastructure-engineer` | CI/CD, infrastructure, deployment |
-| `tech-docs-writer` | Documentation, guides, ADRs |
-
-## Iteration Counters
-
-| Counter | Owner | Max |
-|---------|-------|-----|
-| `code_review_iteration` | code-reviewer | 3 |
-| `test_fix_review_iteration` | code-reviewer | 3 |
-| `perf_fix_review_iteration` | code-reviewer | 3 |
-| `infrastructure_review_iteration` | code-reviewer | 3 |
-| `security_verification_iteration` | security-auditor | 3 |
-| `ui_verification_iteration` | ui-ux-accessibility-specialist | 3 |
-| `data_verification_iteration` | data-engineering-architect | 3 |
-| `test_iteration` | comprehensive-test-engineer | 3 |
-| `performance_iteration` | performance-analyst | 3 |
-| `documentation_iteration` | tech-docs-writer | 3 |
+{{GENERATED:counters_table}}
 
 **Rule:** When counter ≥ max → force forward progress (document unresolved issues, continue workflow).
 

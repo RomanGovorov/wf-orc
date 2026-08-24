@@ -15,6 +15,29 @@ Packages a complete orchestrator + 12 specialized agents + workflow definition i
 | **Codex** | ✅ Skills support | Via `~/.agents/skills/` |
 | **Hermes** | ✅ Skills support | Via plugin marketplace |
 
+**Support levels:**
+- **Full support** — Commands, skills, and extension manifest (slash commands + skills)
+- **Extension support** — Extension manifest and skills (Gemini CLI specific)
+- **Skills support** — Skills only, no slash commands
+
+### Platform-Specific Manifest Fields
+
+Each platform has its own manifest format with specific fields:
+
+| Platform | Manifest File | Required Fields | Optional Fields |
+|----------|---------------|-----------------|-----------------|
+| Gemini CLI | `gemini-extension.json` | `name`, `version`, `description`, `contextFileName` | — |
+| Claude Code | `.claude-plugin/plugin.json` | `name`, `version`, `description` | `homepage`, `repository`, `license`, `keywords` |
+| Codex | `.codex-plugin/plugin.json` | `name`, `version`, `description` | `homepage`, `repository`, `license`, `keywords` |
+| Cursor | `.cursor-plugin/plugin.json` | `name`, `version`, `description` | `displayName`, `skills`, `homepage`, `repository`, `license`, `keywords` |
+| Hermes | `.hermes-plugin/plugin.json` | `name`, `version`, `description` | `homepage`, `repository`, `license`, `keywords` |
+| Qwen Code | auto-generated | — | — |
+
+**Notes:**
+- **Cursor** supports `displayName` (UI display name) and `skills` (path to skills directory)
+- **Qwen Code** auto-generates `qwen-extension.json` at install time — not needed in repo
+- **Gemini CLI** requires `contextFileName` pointing to the orchestrator context file
+
 ## Features
 
 - **12 specialized agents** covering the full development lifecycle
@@ -56,6 +79,12 @@ wf-orc/
 │   ├── java-professional/     # Java patterns
 │   ├── kotlin-professional/   # Kotlin patterns
 │   └── pm-task-tracker/       # External PM dashboard integration
+├── templates/                 # Template files for code generation
+│   ├── fragments/             # Reusable content fragments
+│   ├── commands/              # Command templates (run.md.tmpl, etc.)
+│   └── GEMINI.md.tmpl        # Context file template
+├── scripts/                   # Utility scripts
+│   └── generate_all.py        # Generate all files from templates + workflow.yaml
 ├── agents/                    # Agent prompts (12 agents)
 └── docs/                      # Created at runtime (gitignored) — artifacts, tasks, reviews
 ```
@@ -109,7 +138,7 @@ See `skills/orchestrate/SKILL.md` for the full list of trigger phrases.
 
 ## Workflow
 
-> **Note:** The workflow, agents, and iteration counters sections below are duplicated in `GEMINI.md` for AI platform compatibility. When updating this section, also update `GEMINI.md` to maintain consistency.
+> **Note:** `GEMINI.md` and command files are auto-generated from templates + `workflow.yaml`. Run `python scripts/generate_all.py` after modifying workflow to regenerate all files.
 
 ```
 User Request
@@ -129,24 +158,26 @@ User Request
 
 | Agent | Role |
 |-------|------|
-| `project-manager` | Backlog, tasks, prioritization |
-| `architecture-planner` | Architecture, planning, ADRs |
-| `security-auditor` | Security audit (Phase 1 & 2) |
-| `ui-ux-accessibility-specialist` | UI/UX audit (Phase 1 & 2) |
-| `data-engineering-architect` | Data/pipeline audit (Phase 1 & 2) |
-| `code-implementer` | Code implementation & bugfixes |
-| `code-reviewer` | Code review & infrastructure review |
-| `comprehensive-test-engineer` | Testing & QA |
-| `performance-analyst` | Profiling & load testing |
-| `devops-infrastructure-engineer` | CI/CD, deployment, monitoring |
+| `business-analyst` | Requirements gathering, TZ creation, project context |
+| `project-manager` | Project management, backlog, prioritization |
+| `architecture-planner` | Architecture, planning, documentation |
+| `security-auditor` | Security audit, vulnerabilities |
+| `ui-ux-accessibility-specialist` | UI specifications, accessibility, UX |
+| `data-engineering-architect` | ETL, SQL, data pipelines |
+| `code-implementer` | Code implementation, refactoring |
+| `code-reviewer` | Independent code review, code quality |
+| `comprehensive-test-engineer` | Testing, QA |
+| `performance-analyst` | Profiling, load testing |
+| `devops-infrastructure-engineer` | CI/CD, infrastructure, deployment |
 | `tech-docs-writer` | Documentation, guides, ADRs |
-| `business-analyst` | Requirements (pre-workflow, manual) |
 
 ## Iteration Counters
 
 | Counter | Owner | Max |
 |---------|-------|-----|
 | `code_review_iteration` | code-reviewer | 3 |
+| `test_fix_review_iteration` | code-reviewer | 3 |
+| `perf_fix_review_iteration` | code-reviewer | 3 |
 | `infrastructure_review_iteration` | code-reviewer | 3 |
 | `security_verification_iteration` | security-auditor | 3 |
 | `ui_verification_iteration` | ui-ux-accessibility-specialist | 3 |
@@ -164,6 +195,312 @@ User Request
 3. **Agents** (`agents/*.md`) — Agent prompts loaded by orchestrator
 4. **Context** (`GEMINI.md`) — Orchestrator context for Gemini CLI / Codex / Cursor
 5. **Workflow** (`workflow.yaml`) — Single source of truth for transitions and conditions
+
+## Code Generation
+
+All command files and context files are auto-generated from templates + `workflow.yaml`. This ensures consistency across all documentation.
+
+### After modifying `workflow.yaml`:
+
+```bash
+python scripts/generate_all.py
+```
+
+### What gets generated:
+
+| Output File | Template | Generated From |
+|-------------|----------|----------------|
+| `commands/wf-orc/run.md` | `templates/commands/run.md.tmpl` | workflow.yaml transitions + counters |
+| `commands/wf-orc/full.md` | `templates/commands/full.md.tmpl` | workflow.yaml counters |
+| `commands/wf-orc/research.md` | `templates/commands/research.md.tmpl` | (static content) |
+| `GEMINI.md` | `templates/GEMINI.md.tmpl` | workflow.yaml agents + counters |
+
+### Template directives:
+
+- `{{INCLUDE:fragments/file.md}}` — inserts content from `templates/fragments/`
+- `{{GENERATED:agents_table}}` — generates agents table from workflow.yaml
+- `{{GENERATED:counters_table}}` — generates counters table from workflow.yaml
+- `{{GENERATED:condition_evaluation_map}}` — generates transitions table from workflow.yaml
+- `{{GENERATED:counter_ownership_table}}` — generates counter ownership from workflow.yaml
+
+### Manual edits:
+
+- Edit **templates** in `templates/` for structural changes
+- Edit **`workflow.yaml`** for workflow logic changes (agents, transitions, counters)
+- Run **`generate_all.py`** to regenerate all output files
+
+### Structure:
+
+```
+templates/
+├── fragments/                    # Reusable content fragments
+│   ├── initialize_counters.md
+│   ├── phase_detection.md
+│   ├── code_implementer_mapping.md
+│   ├── forced_progress.md
+│   ├── artifact_forwarding.md
+│   ├── user_interaction.md
+│   └── workflow_completion.md
+├── commands/                     # Command templates
+│   ├── run.md.tmpl
+│   ├── full.md.tmpl
+│   └── research.md.tmpl
+└── GEMINI.md.tmpl               # Context file template
+```
+
+**Requirements:**
+- Python 3.7+
+- PyYAML (`pip install pyyaml`)
+
+**Note:** Output files are overwritten completely. Manual edits to generated files will be lost. Edit templates or `workflow.yaml` instead.
+
+## How to Modify Workflow
+
+Step-by-step guide for making changes to the workflow.
+
+### Step 1: Edit workflow.yaml
+
+Make your changes in `workflow.yaml` — this is the **single source of truth**:
+
+- Add/remove agents → `agents:` section
+- Add/remove transitions → `transitions:` section
+- Add/remove counters → `iteration_counters:` section
+- Modify conditions, artifacts, processes
+
+### Step 2: Edit templates (if needed)
+
+If you need to change the **structure** of generated files (not just data):
+
+- `templates/commands/run.md.tmpl` — structure of /wf-orc:run command
+- `templates/commands/full.md.tmpl` — structure of /wf-orc:full command
+- `templates/commands/research.md.tmpl` — structure of /wf-orc:research command
+- `templates/GEMINI.md.tmpl` — structure of context file
+- `templates/fragments/*.md` — reusable content sections
+
+### Step 3: Regenerate files
+
+```bash
+python scripts/generate_all.py
+```
+
+This regenerates:
+- `commands/wf-orc/run.md`
+- `commands/wf-orc/full.md`
+- `commands/wf-orc/research.md`
+- `GEMINI.md`
+
+### Step 4: Update README.md (if needed)
+
+If you added/removed agents or counters, update the tables in README.md manually:
+- `## Agents` table
+- `## Iteration Counters` table
+
+### Step 5: Verify
+
+Run project verification (see [Project Verification](#project-verification) below).
+
+### Step 6: Bump version
+
+Update version in all plugin manifests:
+
+```bash
+# Update version in all manifests (example: 0.4.7 → 0.4.8)
+sed -i 's/"version": "0.4.7"/"version": "0.4.8"/g' \
+  gemini-extension.json \
+  .claude-plugin/plugin.json \
+  .codex-plugin/plugin.json \
+  .cursor-plugin/plugin.json \
+  .hermes-plugin/plugin.json
+```
+
+### Step 7: Commit
+
+```bash
+git add -A
+git commit -m "feat: description of changes"
+```
+
+---
+
+## Project Verification
+
+Run these checks to verify project consistency. Launch agents in parallel for speed.
+
+### Full Verification (recommended)
+
+Run both agents in parallel:
+
+```
+Run tech-docs-writer and code-reviewer in parallel for a full verification from scratch
+```
+
+**Prompts:**
+
+<details>
+<summary>tech-docs-writer prompt</summary>
+
+```
+Perform a full documentation audit of the wf-orc project at /home/gans/ai/wf-orc from scratch.
+
+Context: wf-orc is a multi-agent workflow orchestrator for AI platforms (Qwen Code, Gemini CLI, Claude Code, Cursor, Codex, Hermes). It orchestrates 12 specialized agents.
+
+IMPORTANT: Check file CONTENTS, not just structure. Read each file completely.
+
+## What to check:
+
+### 1. README.md
+- All 12 agents in the table match agents/*.md
+- Commands (/wf-orc:run, /wf-orc:research, /wf-orc:full) are described correctly
+- Iteration counters table (should have 10 counters)
+- Workflow diagram reflects actual transitions
+- Structure tree shows all directories (including scripts/, templates/)
+- "Platform-Specific Manifest Fields" section is correct
+
+### 2. GEMINI.md
+- Must be SYNCHRONIZED with workflow.yaml (agents, counters)
+- Verify that generate_all.py script generates correct content
+- No @ includes (should be replaced with inline content)
+- Reference to workflow.yaml is present
+
+### 3. workflow.yaml
+- All 12 agents are defined
+- All transitions are valid — no orphans, no dead ends
+- Condition Evaluation Map matches actual conditions
+- Iteration counters (10 items) — all defined
+- Process definitions are correct
+- code-implementer states are correct
+
+### 4. Agents (agents/*.md)
+- Each of the 12 agents has correct frontmatter
+- Agent name matches workflow.yaml
+- No cross-references to non-existent files
+
+### 5. Commands (commands/wf-orc/*.md)
+- run.md, research.md, full.md
+- Transitions match workflow.yaml
+- Condition Evaluation Map is correct
+
+### 6. Skills (skills/**/*.md)
+- Each SKILL.md has valid frontmatter
+- No duplication between skills
+
+### 7. Plugin manifests
+- gemini-extension.json
+- .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, .hermes-plugin/plugin.json
+- Versions are consistent
+- Platform-specific fields are correct
+
+### 8. Templates
+- templates/fragments/*.md — all fragments exist
+- templates/commands/*.tmpl — all templates exist
+- templates/GEMINI.md.tmpl — template exists
+
+### 9. Scripts
+- scripts/generate_all.py — works correctly
+- Run the script and verify all files are generated
+
+### 10. Cross-references
+- All links between files are valid
+- No broken links
+
+Create a detailed report with ALL found issues:
+- Critical (broken links, wrong names, mismatches)
+- Medium (outdated information, omissions)
+- Low (stylistic, minor inaccuracies)
+```
+
+</details>
+
+<details>
+<summary>code-reviewer prompt</summary>
+
+```
+Perform a full code review of the wf-orc project at /home/gans/ai/wf-orc from scratch.
+
+Context: wf-orc is a multi-agent workflow orchestrator for AI platforms. The project consists of markdown documentation, YAML workflow, JSON plugin manifests, and Python scripts.
+
+## What to check:
+
+### 1. workflow.yaml (central file)
+- YAML syntax validity
+- All 12 agents are defined correctly
+- All transitions are valid — no cycles, dead ends, unreachable states
+- Conditions are correct and consistent
+- Iteration counters (10 items) — all defined
+- Process definitions (9 processes) are correct
+- code-implementer states (7 states) are correct
+- Escalation paths are correct
+- Parallel transitions (T45a, T45b) are correct
+
+### 2. Plugin manifests (JSON)
+- gemini-extension.json, .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, .hermes-plugin/plugin.json
+- JSON validity
+- Version consistency
+- Description consistency
+- Platform-specific fields are correct
+
+### 3. Agents (agents/*.md)
+- Each of the 12 agents has correct frontmatter
+- Result JSON schemas are valid
+- No contradictions in instructions
+- Tools lists are correct
+
+### 4. Commands (commands/wf-orc/*.md)
+- run.md, research.md, full.md
+- Transitions match workflow.yaml
+- Condition Evaluation Map is correct
+
+### 5. Skills (skills/**/*.md)
+- Each SKILL.md has valid frontmatter
+- Domain skills have paths for auto-trigger
+- No duplication between skills
+
+### 6. Templates
+- templates/fragments/*.md — all fragments
+- templates/commands/*.tmpl — all templates
+- templates/GEMINI.md.tmpl
+
+### 7. Scripts
+- scripts/generate_all.py
+- Code is correct
+- Handles all cases
+- Generates correct files
+
+### 8. Architecture
+- No information duplication between files
+- Single source of truth (workflow.yaml) is enforced
+- Version consistency across all manifests
+
+### 9. Security
+- No hardcoded secrets
+- API keys are passed correctly (in headers, not in URL)
+- No potential injection vulnerabilities
+
+Create a detailed report with categorization:
+- Critical (broken logic, invalid YAML/JSON)
+- High (architectural issues, security risks)
+- Medium (mismatches, duplication)
+- Low (improvements, refactoring)
+```
+
+</details>
+
+### Quick Consistency Check
+
+For a fast check of just the generated files consistency:
+
+```
+Verify that GEMINI.md and commands/wf-orc/*.md are synchronized with workflow.yaml. Run python scripts/generate_all.py and compare the result with current files.
+```
+
+### After Making Changes
+
+After fixing issues found during verification:
+
+1. Run `python scripts/generate_all.py` to regenerate files
+2. Re-run verification to confirm fixes
+3. Bump version if needed
+4. Commit changes
 
 ## License
 
