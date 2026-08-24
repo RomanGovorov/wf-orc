@@ -8,12 +8,11 @@ Packages a complete orchestrator + 12 specialized agents + workflow definition i
 
 | Platform | Status | Installation |
 |----------|--------|--------------|
-| **Qwen Code** | ✅ Full support | `qwen extensions link ./wf-orc` |
-| **Claude Code** | ✅ Skills support | Via plugin marketplace |
-| **Gemini CLI** | ✅ Extension support | `gemini extensions install ./wf-orc` |
-| **Cursor** | ✅ Skills support | Via plugin marketplace |
-| **Codex** | ✅ Skills support | Via `~/.agents/skills/` |
-| **Hermes** | ✅ Skills support | Via plugin marketplace |
+| **Qwen Code** | ✅ Full support | `qwen extensions install https://github.com/RomanGovorov/wf-orc` |
+| **Gemini CLI** | ✅ Extension support | `gemini extensions install https://github.com/RomanGovorov/wf-orc` |
+| **Cursor** | ✅ Rules support | Customize → Rules → Add Rule → Remote Rule (GitHub URL) |
+| **Codex** | ✅ Skills support | `git clone https://github.com/RomanGovorov/wf-orc ~/.agents/wf-orc && ln -s ~/.agents/wf-orc/skills ~/.agents/skills/wf-orc` |
+| **Hermes** | ✅ Plugin support | Via plugin manager (see Hermes documentation) |
 
 **Support levels:**
 - **Full support** — Commands, skills, and extension manifest (slash commands + skills)
@@ -27,10 +26,9 @@ Each platform has its own manifest format with specific fields:
 | Platform | Manifest File | Required Fields | Optional Fields |
 |----------|---------------|-----------------|-----------------|
 | Gemini CLI | `gemini-extension.json` | `name`, `version`, `description`, `contextFileName` | — |
-| Claude Code | `.claude-plugin/plugin.json` | `name`, `version`, `description` | `homepage`, `repository`, `license`, `keywords` |
 | Codex | `.codex-plugin/plugin.json` | `name`, `version`, `description` | `homepage`, `repository`, `license`, `keywords` |
 | Cursor | `.cursor-plugin/plugin.json` | `name`, `version`, `description` | `displayName`, `skills`, `homepage`, `repository`, `license`, `keywords` |
-| Hermes | `.hermes-plugin/plugin.json` | `name`, `version`, `description` | `homepage`, `repository`, `license`, `keywords` |
+| Hermes | `.hermes-plugin/plugin.yaml` | `name`, `version`, `description` | `author`, `provides_hooks` |
 | Qwen Code | auto-generated | — | — |
 
 **Notes:**
@@ -52,10 +50,9 @@ Each platform has its own manifest format with specific fields:
 ```
 wf-orc/
 ├── gemini-extension.json      # Gemini CLI manifest
-├── .claude-plugin/plugin.json # Claude Code manifest
 ├── .cursor-plugin/plugin.json # Cursor manifest
 ├── .codex-plugin/plugin.json  # Codex manifest
-├── .hermes-plugin/plugin.json # Hermes manifest
+├── .hermes-plugin/plugin.yaml # Hermes manifest
 ├── GEMINI.md                  # Orchestrator context for Gemini CLI / Codex / Cursor
 ├── AGENTS.md                  # Context pointer for Codex/Cursor
 ├── workflow.yaml              # Single source of truth for transitions
@@ -96,26 +93,31 @@ wf-orc/
 ### Qwen Code
 
 ```bash
-# Local development
-qwen extensions link ./wf-orc
-
-# From Git
-qwen extensions install https://github.com/<user>/wf-orc
+qwen extensions install https://github.com/RomanGovorov/wf-orc
 ```
 
 ### Gemini CLI
 
 ```bash
-gemini extensions install ./wf-orc
+gemini extensions install https://github.com/RomanGovorov/wf-orc
 ```
 
-### Claude Code / Cursor / Hermes
+### Cursor
 
-Install via platform's plugin marketplace or copy `skills/` to your project.
+1. Open Cursor → Customize → Rules → Add Rule
+2. Select "Remote Rule (GitHub)"
+3. Enter: `https://github.com/RomanGovorov/wf-orc`
 
-### Codex
+### Codex (OpenAI)
 
-Copy `skills/` to `~/.agents/skills/wf-orc/` for global access.
+```bash
+git clone https://github.com/RomanGovorov/wf-orc ~/.agents/wf-orc
+ln -s ~/.agents/wf-orc/skills ~/.agents/skills/wf-orc
+```
+
+### Hermes
+
+Install via Hermes plugin manager (see Hermes documentation).
 
 ## Usage
 
@@ -307,10 +309,9 @@ Update version in all plugin manifests:
 # Update version in all manifests (example: 0.4.7 → 0.4.8)
 sed -i 's/"version": "0.4.7"/"version": "0.4.8"/g' \
   gemini-extension.json \
-  .claude-plugin/plugin.json \
   .codex-plugin/plugin.json \
   .cursor-plugin/plugin.json \
-  .hermes-plugin/plugin.json
+  .hermes-plugin/plugin.yaml
 ```
 
 ### Step 7: Commit
@@ -342,7 +343,7 @@ Run tech-docs-writer and code-reviewer in parallel for a full verification from 
 ```
 Perform a full documentation audit of the wf-orc project at /home/gans/ai/wf-orc from scratch.
 
-Context: wf-orc is a multi-agent workflow orchestrator for AI platforms (Qwen Code, Gemini CLI, Claude Code, Cursor, Codex, Hermes). It orchestrates 12 specialized agents.
+Context: wf-orc is a multi-agent workflow orchestrator for AI platforms (Qwen Code, Gemini CLI, Cursor, Codex, Hermes). It orchestrates 12 specialized agents.
 
 IMPORTANT: Check file CONTENTS, not just structure. Read each file completely.
 
@@ -386,7 +387,7 @@ IMPORTANT: Check file CONTENTS, not just structure. Read each file completely.
 
 ### 7. Plugin manifests
 - gemini-extension.json
-- .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, .hermes-plugin/plugin.json
+- .codex-plugin/plugin.json, .cursor-plugin/plugin.json, .hermes-plugin/plugin.yaml
 - Versions are consistent
 - Platform-specific fields are correct
 
@@ -432,8 +433,8 @@ Context: wf-orc is a multi-agent workflow orchestrator for AI platforms. The pro
 - Escalation paths are correct
 - Parallel transitions (T45a, T45b) are correct
 
-### 2. Plugin manifests (JSON)
-- gemini-extension.json, .claude-plugin/plugin.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, .hermes-plugin/plugin.json
+### 2. Plugin manifests (JSON/YAML)
+- gemini-extension.json, .codex-plugin/plugin.json, .cursor-plugin/plugin.json, .hermes-plugin/plugin.yaml
 - JSON validity
 - Version consistency
 - Description consistency
