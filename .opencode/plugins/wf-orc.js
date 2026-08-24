@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
 
-const __dirname = dirname(import.meta.dirname || new URL(import.meta.url).pathname);
+const __dirname = import.meta.dirname || join(fileURLToPath(import.meta.url), '..');
 const ROOT = join(__dirname, '..', '..');
 
 // Tool name → OpenCode permission key
