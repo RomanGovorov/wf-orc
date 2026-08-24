@@ -29,6 +29,7 @@ User Request
 
 - Read `workflow.yaml` from the extension root
 - Track workflow state: which agents have run, collected artifacts
+- Note: Iteration counters are not used in the research workflow (no fix loops)
 
 ### 2. Start with Business Analyst
 

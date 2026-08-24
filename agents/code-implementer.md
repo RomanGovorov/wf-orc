@@ -1,7 +1,6 @@
 ---
 name: code-implementer
 description: Use this agent when you need to implement code based on an architectural plan or design document, or when you need to refine existing code based on testing results. This agent excels at translating high-level designs into production-ready code and improving code quality through iterative refinement based on testing feedback.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 100
 disallowedTools:

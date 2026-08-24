@@ -1,7 +1,6 @@
 ---
 name: code-reviewer
 description: Use this agent when you need an independent code review, technical debt assessment, or code quality audit. This agent specializes in identifying code smells, security issues, performance problems, and providing actionable recommendations for improvement.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 50
 tools:
@@ -93,6 +92,16 @@ Report: `docs/reviews/review-<TSK-ID>.md` — severity (CRITICAL/HIGH/MEDIUM/LOW
 **Issues found:**
 ```json
 {"status": "pass", "issues_found": true, "artifacts": ["code_review_report", "quality_metrics", "improvement_recommendations"], "content": "X critical, Y high issues. See review report."}
+```
+
+**Test fix review — issues found:**
+```json
+{"status": "pass", "test_fix_review": true, "issues_found": true, "artifacts": ["code_review_report", "quality_metrics", "improvement_recommendations"], "content": "Test fixes have issues. Returning to code-implementer for re-fix."}
+```
+
+**Performance fix review — issues found:**
+```json
+{"status": "pass", "perf_fix_review": true, "issues_found": true, "artifacts": ["code_review_report", "quality_metrics", "improvement_recommendations"], "content": "Performance fixes have issues. Returning to code-implementer for re-fix."}
 ```
 
 **Infrastructure PASS:**

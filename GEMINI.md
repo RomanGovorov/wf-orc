@@ -30,6 +30,8 @@ User Request
   → project-manager (done)
 ```
 
+*This shows the standard workflow (`/wf-orc:run`). Research and Full workflows start with `business-analyst` — see Quick Start table above.*
+
 ## Agents (12)
 
 | Agent | Role |
@@ -67,7 +69,7 @@ User Request
 1. **Read `workflow.yaml`** for the full transition table and conditions
 2. **Launch agents** via `agent` tool with `subagent_type` = agent name
 3. **Evaluate conditions** from agent's JSON result to determine next transition
-4. **Parallel branches**: launch test + performance simultaneously; wait for BOTH before devops
+4. **Parallel branches**: launch comprehensive-test-engineer + performance-analyst simultaneously; wait for BOTH before devops-infrastructure-engineer
 5. **Forced progress**: ALL agents return `status: "pass"`. No `"fail"` — document issues in content
 6. **Phase detection**: Phase 1 audits (before implementation) vs Phase 2 verification (after fixes) — determined by incoming transition
 7. **User questions**: Agents may ask questions via `ask_user_question` — relay to user
@@ -75,3 +77,7 @@ User Request
 ## Detailed Instructions
 
 See `/wf-orc:run` command for full orchestration instructions with complete transition table.
+
+## Skills
+
+@./skills/orchestrate/SKILL.md

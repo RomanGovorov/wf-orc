@@ -27,62 +27,66 @@
 # ┌─────────────────────────────┬──────────────────────────────┬────────────────────────────────────┐
 # │ Current Agent               │ Transition                   │ Condition = TRUE when              │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ project-manager             │ T01 → architecture-planner   │ status = "pass"                    │
+# │ project-manager             │ T01 → architecture-planner   │ backlog_approved = true                    │
 # │ project-manager             │ T70_REV → tech-docs-writer   │ documentation_needs_revision = true│
 # │                             │                              │ AND documentation_iteration < 3    │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ architecture-planner        │ T12a → security-auditor      │ architecture doc mentions security │
 # │                             │                              │ requirements AND not all audits    │
 # │                             │                              │ returned yet                       │
-# │ architecture-planner        │ T12b → ui-ux-accessibility-specialist      │ architecture doc mentions UI needs │
-# │                             │                              │ AND not all audits returned yet    │
-# │ architecture-planner        │ T12c → data-engineering-architect      │ architecture doc mentions data/    │
-# │                             │                              │ pipeline needs AND not all audits  │
-# │                             │                              │ returned yet                       │
+# │ architecture-planner        │ T12b → ui-ux-accessibility-specialist │ architecture doc mentions UI needs │
+# │                             │                                       │ AND not all audits returned yet    │
+# │ architecture-planner        │ T12c → data-engineering-architect     │ architecture doc mentions data/    │
+# │                             │                                       │ pipeline needs AND not all audits  │
+# │                             │                                       │ returned yet                       │
 # │ architecture-planner        │ T13 → code-implementer       │ all audits returned (or none       │
 # │                             │                              │ needed) — i.e. you have collected  │
 # │                             │                              │ all Phase 1 results                │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ security-auditor (Phase 1)  │ T23a → architecture-planner  │ always (any result) — collect audit│
-# │ ui-ux-accessibility-specialist (Phase 1)  │ T23b → architecture-planner  │ always (any result) — collect audit│
-# │ data-engineering-architect (Phase 1)  │ T23c → architecture-planner  │ always (any result) — collect audit│
+# │ ui-ux-specialist (Phase 1)  │ T23b → architecture-planner  │ always (any result) — collect audit│
+# │ data-eng-architect (Phase 1)│ T23c → architecture-planner  │ always (any result, except deployment_only) — collect audit│
+# │                             │                              │ NOTE: if deployment_only=true, use T_DATA_TO_DEVOPS instead (skip to devops)
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ security-auditor (Phase 2)  │ T_SEC_VERIFY → code-impl     │ findings NOT resolved AND iter < 3 │
+# │ security-auditor (Phase 2)  │ T_SEC_VERIFY → code-implementer     │ findings NOT resolved AND iter < 3 │
 # │                             │ T_SEC_PASS → code-reviewer   │ security_verification_pass OR iter >= 3 │
-# │ ui-ux-accessibility-specialist (Phase 2)  │ T_UI_VERIFY → code-impl      │ findings NOT resolved AND iter < 3 │
+# │ ui-ux-specialist (Phase 2)  │ T_UI_VERIFY → code-implementer      │ findings NOT resolved AND iter < 3 │
 # │                             │ T_UI_PASS → code-reviewer    │ ui_verification_pass OR iter >= 3  │
-# │ data-engineering-architect (Phase 2)  │ T_DATA_VERIFY → code-impl    │ findings NOT resolved AND iter < 3 │
+# │ data-eng-architect (Phase 2)│ T_DATA_VERIFY → code-implementer    │ findings NOT resolved AND iter < 3 │
 # │                             │ T_DATA_PASS → code-reviewer  │ data_verification_pass OR iter >= 3 │
-# │ data-engineering-architect            │ T_DATA_TO_DEVOPS → devops    │ deployment_only = true             │
+# │ data-eng-architect          │ T_DATA_TO_DEVOPS → devops    │ deployment_only = true             │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ code-implementer            │ T34 → code-reviewer          │ no fix flags present (initial impl │
 # │                             │                              │ or fixing_review)                  │
-# │                             │ T_CODE_TO_SEC → sec-auditor  │ security_fixes_complete = true     │
-# │                             │ T_CODE_TO_UI → ui-ux-spec    │ ui_fixes_complete = true           │
-# │                             │ T_CODE_TO_DATA → data-eng    │ data_fixes_complete = true         │
-# │                             │ T_CODE_TO_TEST → code-rev    │ test_fixes_complete = true         │
-# │                             │ T_CODE_TO_PERF → code-rev    │ perf_fixes_complete = true         │
+# │                             │ T_CODE_TO_SEC → security-auditor  │ security_fixes_complete = true     │
+# │                             │ T_CODE_TO_UI → ui-ux-accessibility-specialist    │ ui_fixes_complete = true           │
+# │                             │ T_CODE_TO_DATA → data-engineering-architect    │ data_fixes_complete = true         │
+# │                             │ T_CODE_TO_TEST → code-reviewer    │ test_fixes_complete = true         │
+# │                             │ T_CODE_TO_PERF → code-reviewer    │ perf_fixes_complete = true         │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ code-reviewer               │ T43 → code-implementer       │ issues_found = true AND iter < 3   │
-# │                             │ T45a → test-engineer         │ code_review_pass = true OR iter >= 3 │
+# │                             │ T43_TEST → code-implementer  │ test_fix_review = true AND iter < 3│
+# │                             │ T43_PERF → code-implementer  │ perf_fix_review = true AND iter < 3│
+# │                             │ T45a → comprehensive-test-engineer         │ code_review_pass = true OR iter >= 3 │
 # │                             │ T45b → performance-analyst   │ code_review_pass = true OR iter >= 3 │
-# │                             │ T_DEVOPS_REVIEW_PASS → devops│ infrastructure_review_pass = true  │
-# │                             │ T_DEVOPS_REVIEW_FAIL → devops│ infrastructure_review_pass = false │
-# │                             │                              │ AND iter < 3                     │
+# │                             │ T_DEVOPS_REVIEW_PASS         │ infrastructure_review_pass = true  │
+# │                             │ → devops-infrastructure-engineer            │                                  │
+# │                             │ T_DEVOPS_REVIEW_FAIL         │ infrastructure_review_pass = false │
+# │                             │ → devops-infrastructure-engineer            │ AND iter < 3                     │
 # │                             │ T_DEVOPS_REVIEW_FORCE_PASS   │ infrastructure_review_pass = false │
-# │                             │ → devops                     │ AND iter >= 3                    │
+# │                             │ → devops-infrastructure-engineer            │ AND iter >= 3                    │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ comprehensive-test-engineer │ T51_3 → code-implementer     │ bugs_found = true AND iter < 3     │
-# │                             │ T51_6 → devops-infra         │ tests_pass = true OR iter >= 3     │
+# │                             │ T51_6 → devops               │ tests_pass = true OR iter >= 3     │
 # │ performance-analyst         │ T52_3 → code-implementer     │ bottlenecks_found AND iter < 3     │
-# │                             │ T52_6 → devops-infra         │ performance_pass = true OR iter >= 3 │
+# │                             │ T52_6 → devops               │ performance_pass = true OR iter >= 3 │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ devops-infrastructure-eng   │ T67 → tech-docs-writer       │ (deployment_complete AND NOT       │
-# │                             │                              │ infra_needs_review) OR iter >= 3    │
-# │                             │ T_DEVOPS_REVIEW → code-rev   │ infrastructure needs review AND    │
-# │                             │                              │ infra_review_iter < 3              │
+# │ devops-infra-engineer       │ T67 → tech-docs-writer       │ (deployment_complete AND NOT       │
+# │                             │                              │ infrastructure_code_needs_review) OR iter >= 3    │
+# │                             │ T_DEVOPS_REVIEW → code-reviewer   │ infrastructure_code_needs_review = true AND    │
+# │                             │                              │ infrastructure_review_iteration < 3              │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ tech-docs-writer            │ T70 → project-manager        │ status = "pass" (docs complete)    │
+# │ tech-docs-writer            │ T70 → project-manager        │ documentation_complete = true      │
 # │                             │                              │ OR documentation_iteration >= 3    │
 # └─────────────────────────────┴──────────────────────────────┴────────────────────────────────────┘
 #
@@ -90,8 +94,8 @@
 # - Phase 1 vs Phase 2: Phase 1 audits (T12a/b/c → T23a/b/c) happen BEFORE implementation.
 #   Phase 2 verification (T_SEC_VERIFY/PASS, T_UI_VERIFY/PASS, T_DATA_VERIFY/PASS) happens AFTER
 #   code-implementer fixes. Determine phase from the incoming transition to the audit agent.
-# - parallel_start: launch BOTH agents (test + performance). Use agent tool twice.
-# - parallel_join: devops starts only when BOTH test AND performance branches complete.
+# - parallel_start: launch BOTH agents (comprehensive-test-engineer + performance-analyst). Use agent tool twice.
+# - parallel_join: devops-infrastructure-engineer starts only when BOTH comprehensive-test-engineer AND performance-analyst branches complete.
 # - When iteration >= max: force forward progress regardless of issues (document unresolved issues).
 # - code-implementer state: determined by incoming transition. Use state to pick correct outgoing
 #   transition (T34 vs T_CODE_TO_SEC vs T_CODE_TO_UI vs T_CODE_TO_DATA vs T_CODE_TO_TEST vs T_CODE_TO_PERF).
@@ -102,6 +106,7 @@ agents:
   max_iterations: null
   escalation_path: null
   description: Requirements gathering, TZ creation, project context
+  note: Entry point for /wf-orc:full and /wf-orc:research only — not part of standard workflow
 - id: project-manager
   name: project-manager
   max_iterations: null
@@ -137,59 +142,70 @@ agents:
   escalation_path: null
   description: Code implementation, refactoring
   note: Iteration counter is reset after each successful review pass
+  state_machine_semantics: descriptive  # States guide routing but agent can use any valid transition based on result flags
   states:
   - id: implementing
     description: Initial implementation from architecture documents
+    incoming_transition: T13
     transitions:
     - T34
+    - T_CODE_TO_SEC
+    - T_CODE_TO_UI
+    - T_CODE_TO_DATA
   - id: fixing_security
     description: Fixing security vulnerabilities identified by security-auditor
+    incoming_transition: T_SEC_VERIFY
     transitions:
     - T_CODE_TO_SEC
   - id: fixing_ui
     description: Fixing UI/UX issues identified by ui-ux-accessibility-specialist
+    incoming_transition: T_UI_VERIFY
     transitions:
     - T_CODE_TO_UI
   - id: fixing_data
     description: Fixing data architecture issues identified by data-engineering-architect
+    incoming_transition: T_DATA_VERIFY
     transitions:
     - T_CODE_TO_DATA
   - id: fixing_review
     description: Fixing issues identified by code-reviewer (T43 loop)
+    incoming_transition: T43
     transitions:
     - T34
   - id: fixing_test
     description: Fixing bugs identified by comprehensive-test-engineer — returns to code-reviewer for
       re-review
+    incoming_transition: [T43_TEST, T51_3]
     transitions:
     - T_CODE_TO_TEST
   - id: fixing_perf
     description: Fixing performance bottlenecks identified by performance-analyst — returns to code-reviewer
       for re-review
+    incoming_transition: [T43_PERF, T52_3]
     transitions:
     - T_CODE_TO_PERF
 - id: code-reviewer
   name: code-reviewer
   max_iterations: 3
-  escalation_path: architecture-planner  # advisory only — no actual transition; code proceeds to T45a/T45b
+  escalation_path: null  # No escalation — after code-reviewer, workflow proceeds to T45a/T45b (test/performance)
   escalation_final_destination: comprehensive-test-engineer
   description: Independent code review, code quality
 - id: comprehensive-test-engineer
   name: comprehensive-test-engineer
   max_iterations: 3
-  escalation_path: project-manager
+  escalation_path: null  # No escalation — after comprehensive-test-engineer, workflow proceeds to T51_3/T51_6
   escalation_final_destination: devops-infrastructure-engineer
   description: Testing, QA
 - id: performance-analyst
   name: performance-analyst
   max_iterations: 3
-  escalation_path: architecture-planner
+  escalation_path: null  # No escalation — after performance-analyst, workflow proceeds to T52_3/T52_6
   escalation_final_destination: devops-infrastructure-engineer
   description: Profiling, load testing
 - id: devops-infrastructure-engineer
   name: devops-infrastructure-engineer
   max_iterations: null
-  escalation_path: project-manager
+  escalation_path: null  # No escalation — after devops-infrastructure-engineer, workflow proceeds to T67/T_DEVOPS_REVIEW
   escalation_final_destination: tech-docs-writer
   description: CI/CD, infrastructure, deployment
 - id: tech-docs-writer
@@ -346,6 +362,28 @@ transitions:
   - improvement_recommendations
   type: loop
   process: code_review_bug_fixes
+- id: T43_TEST
+  from: code-reviewer
+  to: code-implementer
+  condition: test_fix_review AND code_review_iteration < 3
+  artifacts:
+  - code_review_report
+  - quality_metrics
+  - improvement_recommendations
+  type: loop
+  process: code_review_bug_fixes
+  state: fixing_test
+- id: T43_PERF
+  from: code-reviewer
+  to: code-implementer
+  condition: perf_fix_review AND code_review_iteration < 3
+  artifacts:
+  - code_review_report
+  - quality_metrics
+  - improvement_recommendations
+  type: loop
+  process: code_review_bug_fixes
+  state: fixing_perf
 - id: T45a
   from: code-reviewer
   to: comprehensive-test-engineer
@@ -383,6 +421,7 @@ transitions:
   - bug_reports
   type: loop
   process: testing_bug_fixes
+  state: fixing_test
 - id: T51_6
   from: comprehensive-test-engineer
   to: devops-infrastructure-engineer
@@ -401,6 +440,7 @@ transitions:
   - optimization_recommendations
   type: loop
   process: performance_optimization
+  state: fixing_perf
 - id: T52_6
   from: performance-analyst
   to: devops-infrastructure-engineer
@@ -564,7 +604,8 @@ transitions:
   - data_models
   - infrastructure_requirements
   type: conditional
-  process: data_engineering_bug_fixes
+  process: main_workflow
+  phase: initial_audit_collect
 - id: T_CODE_TO_TEST
   from: code-implementer
   to: code-reviewer
@@ -601,7 +642,7 @@ transitions:
 - id: T_DEVOPS_REVIEW_FAIL
   from: code-reviewer
   to: devops-infrastructure-engineer
-  condition: not infrastructure_review_pass AND infrastructure_review_iteration < 3
+  condition: NOT infrastructure_review_pass AND infrastructure_review_iteration < 3
   artifacts:
   - code_review_report
   type: loop
@@ -613,13 +654,15 @@ transitions:
   artifacts:
   - code_review_report
   type: serial
+  process: infrastructure_review
 - id: T_DEVOPS_REVIEW_FORCE_PASS
   from: code-reviewer
   to: devops-infrastructure-engineer
-  condition: not infrastructure_review_pass AND infrastructure_review_iteration >= 3
+  condition: NOT infrastructure_review_pass AND infrastructure_review_iteration >= 3
   artifacts:
   - code_review_report
   type: serial
+  process: infrastructure_review
 processes:
 - id: main_workflow
   name: Main Development Workflow

@@ -1,7 +1,6 @@
 ---
 name: performance-analyst
 description: Use this agent when you need performance profiling, load testing, bottleneck analysis, or system optimization. This agent specializes in identifying performance issues, conducting load tests, and providing data-driven optimization recommendations.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 60
 disallowedTools:

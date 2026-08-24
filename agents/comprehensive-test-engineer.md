@@ -1,7 +1,6 @@
 ---
 name: comprehensive-test-engineer
 description: Use this agent when you need comprehensive test coverage for recently developed code. This agent creates thorough unit, integration, and functional tests, executes them, and reports detailed results including pass/fail status, coverage metrics, and specific failure details.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 80
 disallowedTools:

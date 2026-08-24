@@ -93,11 +93,13 @@ Workflow ends when `tech-docs-writer` → `project-manager` (T70). Mark all task
 | code-implementer | T_CODE_TO_TEST | code-reviewer | `test_fixes_complete = true` |
 | code-implementer | T_CODE_TO_PERF | code-reviewer | `perf_fixes_complete = true` |
 | code-reviewer | T43 | code-implementer | `issues_found = true` AND `code_review_iteration < 3` |
+| code-reviewer | T43_TEST | code-implementer | `test_fix_review = true` AND `code_review_iteration < 3` |
+| code-reviewer | T43_PERF | code-implementer | `perf_fix_review = true` AND `code_review_iteration < 3` |
 | code-reviewer | T45a | comprehensive-test-engineer | `code_review_pass = true` OR `code_review_iteration >= 3` |
 | code-reviewer | T45b | performance-analyst | `code_review_pass = true` OR `code_review_iteration >= 3` |
-| code-reviewer | T_DEVOPS_REVIEW_PASS | devops | `infrastructure_review_pass = true` |
-| code-reviewer | T_DEVOPS_REVIEW_FAIL | devops | `infrastructure_review_pass = false` AND `infrastructure_review_iteration < 3` |
-| code-reviewer | T_DEVOPS_REVIEW_FORCE_PASS | devops | `infrastructure_review_pass = false` AND `infrastructure_review_iteration >= 3` |
+| code-reviewer | T_DEVOPS_REVIEW_PASS | devops-infrastructure-engineer | `infrastructure_review_pass = true` |
+| code-reviewer | T_DEVOPS_REVIEW_FAIL | devops-infrastructure-engineer | `infrastructure_review_pass = false` AND `infrastructure_review_iteration < 3` |
+| code-reviewer | T_DEVOPS_REVIEW_FORCE_PASS | devops-infrastructure-engineer | `infrastructure_review_pass = false` AND `infrastructure_review_iteration >= 3` |
 | comprehensive-test-engineer | T51_3 | code-implementer | `bugs_found = true` AND `test_iteration < 3` |
 | comprehensive-test-engineer | T51_6 | devops-infrastructure-engineer | `tests_pass = true` OR `test_iteration >= 3` |
 | performance-analyst | T52_3 | code-implementer | `bottlenecks_found` AND `performance_iteration < 3` |
@@ -120,11 +122,11 @@ Workflow ends when `tech-docs-writer` → `project-manager` (T70). Mark all task
 | Counter | Incremented when | Owner |
 |---------|-----------------|-------|
 | `code_review_iteration` | code-reviewer finds issues → code-implementer fixes → code-reviewer re-reviews | code-reviewer |
-| `infrastructure_review_iteration` | code-reviewer reviews devops infra code → devops fixes → code-reviewer re-reviews | code-reviewer |
+| `infrastructure_review_iteration` | code-reviewer reviews devops-infrastructure-engineer infra code → devops-infrastructure-engineer fixes → code-reviewer re-reviews | code-reviewer |
 | `security_verification_iteration` | security-auditor Phase 2 finds issues → code-implementer fixes → security-auditor re-verifies | security-auditor |
 | `ui_verification_iteration` | ui-ux-accessibility-specialist Phase 2 finds issues → code-implementer fixes → ui-ux-accessibility-specialist re-verifies | ui-ux-accessibility-specialist |
 | `data_verification_iteration` | data-engineering-architect Phase 2 finds issues → code-implementer fixes → data-engineering-architect re-verifies | data-engineering-architect |
-| `test_iteration` | test-engineer finds bugs → code-implementer fixes → code-reviewer → test-engineer re-tests | comprehensive-test-engineer |
+| `test_iteration` | comprehensive-test-engineer finds bugs → code-implementer fixes → code-reviewer → comprehensive-test-engineer re-tests | comprehensive-test-engineer |
 | `performance_iteration` | performance-analyst finds bottlenecks → code-implementer fixes → code-reviewer → performance-analyst re-profiles | performance-analyst |
 | `documentation_iteration` | project-manager requests doc revision → tech-docs-writer revises → project-manager re-reviews | tech-docs-writer |
 

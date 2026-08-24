@@ -22,8 +22,7 @@ User Request
   → architecture-planner (preliminary architecture, cost estimation)
   → project-manager (backlog, tasks)
   → architecture-planner (detailed architecture, ADRs)
-  → [optional parallel audits]
-      security-auditor | ui-ux-accessibility-specialist | data-engineering-architect
+  → [optional audits (parallel): security | ui-ux | data]
   → architecture-planner (aggregates audit results)
   → code-implementer (implementation)
   → code-reviewer (review)
@@ -60,7 +59,8 @@ The business-analyst will:
 ### 3. Launch Architecture Planner (Preliminary)
 
 After business-analyst completes, launch architecture-planner for preliminary architecture.
-**Note:** This is a preparatory step — not formalized in workflow.yaml. It creates initial architecture documents that project-manager uses for backlog creation. The formal architecture-planner run happens in Step 5 via the standard workflow.
+
+**Why this step is not in workflow.yaml:** This is an ad-hoc preparatory step specific to the Full workflow. It creates initial architecture documents that project-manager needs for backlog creation. The formal architecture-planner run (Step 5) is modeled in workflow.yaml and handles detailed architecture with ADRs.
 
 ```
 agent(subagent_type="architecture-planner", prompt="Create preliminary architecture based on TZ at docs/requirements/TZ-*.md and context at docs/context/")
@@ -80,7 +80,7 @@ Follow the standard workflow from `/wf-orc:run`:
 - Optional audits (security, UI/UX, data)
 - code-implementer
 - code-reviewer
-- Parallel test + performance
+- Parallel comprehensive-test-engineer + performance-analyst
 - devops-infrastructure-engineer
 - tech-docs-writer
 - project-manager (completion)
@@ -105,7 +105,7 @@ The workflow completes when `tech-docs-writer` → `project-manager` (T70). Mark
 1. **Read `workflow.yaml`** for the full transition table and conditions
 2. **Launch agents** via `agent` tool with `subagent_type` = agent name
 3. **Evaluate conditions** from agent's JSON result to determine next transition
-4. **Parallel branches**: launch test + performance simultaneously; wait for BOTH before devops
+4. **Parallel branches**: launch comprehensive-test-engineer + performance-analyst simultaneously; wait for BOTH before devops-infrastructure-engineer
 5. **Forced progress**: ALL agents return `status: "pass"`. No `"fail"` — document issues in content
 6. **Phase detection**: Phase 1 audits (before implementation) vs Phase 2 verification (after fixes) — determined by incoming transition
 7. **User questions**: Agents may ask questions via `ask_user_question` — relay to user

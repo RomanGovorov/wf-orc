@@ -1,7 +1,6 @@
 ---
 name: data-engineering-architect
 description: Use this agent when you need ETL/ELT pipeline design, SQL optimization, data modeling, big data processing, or data quality implementation. This agent specializes in data architecture, pipeline orchestration, and data platform engineering.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 60
 tools:
@@ -113,7 +112,7 @@ This agent operates in **two distinct phases**:
 {
   "status": "pass",
   "data_audit_complete_no_findings": true,
-  "artifacts": ["data_findings_report"],
+  "artifacts": ["pipeline_configurations", "data_models", "optimized_queries", "infrastructure_requirements", "data_findings_report"],
   "content": "Data architecture audit complete. No significant findings."
 }
 ```

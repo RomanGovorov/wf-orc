@@ -1,7 +1,6 @@
 ---
 name: business-analyst
 description: Use this agent to gather and structure project requirements through interactive interviews. Creates formal TZ and project context files in docs/context/ and docs/requirements/. Launch BEFORE starting the development workflow.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 80
 tools:

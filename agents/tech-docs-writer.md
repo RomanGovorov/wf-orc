@@ -1,7 +1,6 @@
 ---
 name: tech-docs-writer
 description: Use this agent when you need to create API documentation, user guides, technical tutorials, architecture decision records (ADRs), runbooks, or release notes. This agent specializes in producing clear, comprehensive, and well-structured technical documentation.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 50
 tools:

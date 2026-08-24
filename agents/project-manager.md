@@ -1,7 +1,6 @@
 ---
 name: project-manager
 description: Use this agent as the main orchestrator for all development requests. This agent is the central hub that receives all project requests, manages the backlog, prioritizes tasks, and coordinates all other specialized agents. Every development workflow starts and passes through this agent.
-model: qwen3.7-max
 approvalMode: auto-edit
 maxTurns: 100
 tools:
