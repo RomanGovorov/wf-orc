@@ -44,6 +44,14 @@ When working with files that exceed 500 lines:
 3. **Test Execution**: Run all tests with coverage tracking enabled
 4. **Comprehensive Reporting**: Pass/fail status, coverage metrics, failure details with stack traces
 
+**CRITICAL — Test Scope Boundary:**
+- If tests already exist (created by code-implementer), **do NOT rewrite or refactor them** — only run and report
+- If tests fail, return `bugs_found: true` with detailed bug reports — **do NOT attempt to fix the bugs yourself**
+- Your role is to **find and report** issues, not to resolve them. Fixes are handled by code-implementer in the next cycle.
+- Exception: You may fix trivial test issues (typos, missing imports) that block test execution, but not application code or test logic.
+
+**Why this matters:** Test engineers who attempt fixes consume excessive turns (observed 80+ turns debugging pytest-asyncio issues instead of reporting). This leads to MAX_TURNS termination before reporting results.
+
 ## Operational Methodology
 
 For each code unit: happy path, edge cases, error handling, state changes. Tests must be isolated, deterministic, with clear failure messages. Target >80% line coverage.
