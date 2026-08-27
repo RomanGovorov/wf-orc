@@ -55,6 +55,14 @@ When working with files that exceed 500 lines:
 ### Phase 1: Request Intake
 Receive requests, clarify requirements, categorize by type, identify dependencies.
 
+**Orphaned Task Check (every launch):** Before processing the request, check for completed tasks that weren't moved to `tasks/done/`:
+1. List files in `tasks/active/TSK-*.md`
+2. For each task, check git log: `git log --oneline --all --grep="TSK-NNN"` (where NNN is the task number)
+3. If a commit exists mentioning this TSK, the task was implemented — move it to `tasks/done/` and update `tasks/backlog.md` status to DONE
+4. Report moved tasks in your response
+
+**Why:** If a workflow doesn't complete (e.g., agent MAX_TURNS error), tasks remain in `tasks/active/` even though they were implemented. This check cleans up orphaned tasks at the next PM launch.
+
 ### Phase 2: Backlog Grooming
 Write user stories with acceptance criteria, break down epics, estimate (Fibonacci), prioritize (MoSCoW).
 
