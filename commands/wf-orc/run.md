@@ -69,6 +69,19 @@ After each agent completes, it returns a JSON result. Use this to determine the 
 
 **Fix transitions (T43, T_CODE_TO_SEC, etc.):** Same rule — if multiple issues need fixing, launch code-implementer once per issue, not once for all issues.
 
+### 3b. Task File Management
+
+**Move tasks to done after code-reviewer pass.** When code-reviewer returns `code_review_pass: true` (T45a/T45b):
+
+1. For each TSK that was implemented in this cycle:
+   - Move `tasks/active/TSK-NNN_*.md` → `tasks/done/TSK-NNN_*.md`
+   - Update status in `tasks/backlog.md` to `DONE`
+2. If using `pm-task-tracker` skill, sync task status to `done`
+
+**Why:** PM only participates at workflow start (T01) and end (T70). Tasks accumulate in `tasks/active/` if not moved incrementally. This was observed in unirec_base — TSK-043 remained in active after completion.
+
+**Note:** Do NOT move tasks to done after code-implementer — wait for code-reviewer approval first.
+
 ### 4. Handle Parallel Branches
 
 After code-reviewer passes, launch BOTH simultaneously:
