@@ -96,8 +96,24 @@ When receiving documentation from `tech-docs-writer` (approved or final iteratio
 
 **Backlog approved:**
 ```json
-{"status": "pass", "backlog_approved": true, "artifacts": ["product_backlog", "user_stories", "sprint_backlog"], "task_ids": ["TSK-001", "TSK-002"], "content": "Backlog approved, 3 stories created"}
+{
+  "status": "pass",
+  "backlog_approved": true,
+  "artifacts": ["product_backlog", "user_stories", "sprint_backlog"],
+  "task_ids": ["TSK-001", "TSK-002"],
+  "tasks": [
+    {"id": "TSK-001", "title": "SQLAlchemy models", "complexity": "medium", "estimated_turns": 15},
+    {"id": "TSK-002", "title": "Alembic migrations", "complexity": "small", "estimated_turns": 8}
+  ],
+  "content": "Backlog approved, 3 stories created"
+}
 ```
+
+**Task complexity guide** (for `estimated_turns`):
+- `small` (5-10 turns): single file change, config update, simple fix
+- `medium` (10-25 turns): 2-5 files, moderate logic, tests included
+- `large` (25-50 turns): 5+ files, complex logic, cross-cutting concerns — **must be split into subtasks by orchestrator**
+- `xlarge` (50+ turns): epic-level — **must be split into multiple tasks by PM before returning**
 
 **Documentation approved:**
 ```json

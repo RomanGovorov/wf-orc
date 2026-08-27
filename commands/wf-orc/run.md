@@ -50,6 +50,25 @@ After each agent completes, it returns a JSON result. Use this to determine the 
 4. Launch the next agent via `agent` tool
 5. If multiple transitions match (`parallel_start`), launch ALL of them simultaneously
 
+### 3a. Task Granularity for code-implementer
+
+**CRITICAL:** When transitioning to `code-implementer` (T13 or any fix transition), launch it **per task**, not per sprint.
+
+**Why:** code-implementer has `maxTurns: 100`. A sprint with 10+ tasks can exceed this limit, causing the agent to terminate mid-implementation (MAX_TURNS error). This was observed in 4 agents across 3 sessions.
+
+**How:**
+1. After PM returns `backlog_approved: true`, extract the task list from `sprint_backlog` (array of TSK objects)
+2. For each task in the sprint, launch a **separate** code-implementer instance:
+   ```
+   agent(subagent_type="code-implementer", prompt="Implement TSK-001: <task description>...")
+   ```
+3. Wait for each code-implementer to complete before launching the next
+4. After ALL tasks are implemented, proceed to code-reviewer (T34)
+
+**Exception:** If a task is explicitly marked as `complexity: "large"` by PM, split it into subtasks before launching code-implementer.
+
+**Fix transitions (T43, T_CODE_TO_SEC, etc.):** Same rule — if multiple issues need fixing, launch code-implementer once per issue, not once for all issues.
+
 ### 4. Handle Parallel Branches
 
 After code-reviewer passes, launch BOTH simultaneously:

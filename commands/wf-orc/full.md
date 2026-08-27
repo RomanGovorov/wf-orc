@@ -77,10 +77,12 @@ agent(subagent_type="project-manager", prompt="Create backlog and sprint plan ba
 
 Follow the standard workflow from `/wf-orc:run`:
 - architecture-planner (detailed architecture)
-- Optional audits (security, UI/UX, data)
-- code-implementer
+- Optional audits (security, UI-UX, data)
+- **code-implementer (per task — see §3a in run.md)**
 - code-reviewer
 - Parallel comprehensive-test-engineer + performance-analyst
+
+**IMPORTANT:** Launch code-implementer once per TSK, not once per sprint. See §3a "Task Granularity" in `/wf-orc:run`.
 - devops-infrastructure-engineer
 - tech-docs-writer
 - project-manager (completion)
