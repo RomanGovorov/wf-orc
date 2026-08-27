@@ -16,6 +16,7 @@ Generated files:
 """
 
 import re
+import sys
 import yaml
 from pathlib import Path
 
@@ -299,4 +300,4 @@ def main():
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

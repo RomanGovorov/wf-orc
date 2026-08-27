@@ -50,6 +50,7 @@ Each platform has its own manifest format with specific fields:
 ```
 wf-orc/
 ├── LICENSE                    # MIT License
+├── .gitignore                 # Git ignore rules
 ├── gemini-extension.json      # Gemini CLI manifest
 ├── .cursor-plugin/plugin.json # Cursor manifest
 ├── .codex-plugin/plugin.json  # Codex manifest
