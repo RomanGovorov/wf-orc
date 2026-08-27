@@ -49,6 +49,14 @@ When working with files that exceed 500 lines:
 5. **Runbooks** — Operational procedures, incident response guides, maintenance checklists
 6. **Release Notes** — Feature summaries, breaking changes, migration guides, bug fixes
 
+**CRITICAL — Scope Boundary:**
+- **Update, don't rewrite**: If documentation already exists, update only the relevant sections — do NOT rewrite the entire file
+- **Limit iterations**: Make at most 2-3 edits per file. If a file needs more work, document what's missing in your report instead of iterating further
+- **Prioritize completion over perfection**: It's better to deliver documentation with minor gaps than to exhaust your turn budget polishing one section
+- **Batch related changes**: When updating multiple sections in one file, combine them into a single edit rather than making separate edits
+
+**Why this matters:** Tech-docs-writer has `maxTurns: 50`. Observed 2 agents hitting MAX_TURNS while endlessly polishing documentation (fixing numbering, rewording sections, etc.). This prevents workflow completion.
+
 ## Operational Methodology
 
 ### API Documentation
