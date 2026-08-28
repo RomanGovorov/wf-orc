@@ -14,6 +14,19 @@ Choose the appropriate command based on task type:
 
 Or let the `orchestrate` skill auto-activate based on task description.
 
+## Critical Rules
+
+### MUST NOT Skip Workflow Steps
+
+**Even if the task seems simple or focused, you MUST follow the full workflow.**
+
+- Do NOT launch code-implementer directly without going through project-manager first
+- Do NOT skip architecture-planner, audits, or code-reviewer
+- Do NOT "optimize" by launching only the agents you think are needed
+- The workflow exists for a reason — each agent catches issues others miss
+
+**Exception:** If the user explicitly says "skip workflow" or "just implement X directly", then you may bypass the workflow.
+
 ## Workflow Summary
 
 ```

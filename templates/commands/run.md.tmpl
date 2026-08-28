@@ -24,6 +24,17 @@ You are the **workflow orchestrator**. You manage a multi-agent development pipe
 
 ## Execution Steps
 
+### 0. CRITICAL — No Workflow Skipping
+
+**MUST NOT skip workflow steps**, even if the task seems simple or focused.
+
+- Do NOT launch code-implementer directly without going through project-manager first
+- Do NOT skip architecture-planner, audits, or code-reviewer
+- Do NOT "optimize" by launching only the agents you think are needed
+- The workflow exists for a reason — each agent catches issues others miss
+
+**Exception:** If the user explicitly says "skip workflow" or "just implement X directly", then you may bypass the workflow.
+
 ### 1. Initialize
 
 - Read `workflow.yaml` from the extension root — this is the **single source of truth** for all transitions, conditions, and agent definitions
