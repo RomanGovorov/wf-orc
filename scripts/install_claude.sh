@@ -35,6 +35,16 @@ if [[ ! -f "$REPO_ROOT/.claude-plugin/plugin.json" ]]; then
     exit 1
 fi
 
+if [[ ! -d "$REPO_ROOT/skills" ]]; then
+    echo "Error: skills/ directory not found."
+    exit 1
+fi
+
+if [[ ! -d "$REPO_ROOT/agents" ]]; then
+    echo "Error: agents/ directory not found."
+    exit 1
+fi
+
 # 1. Clean previous installation
 rm -rf "$PLUGIN_DIR"
 mkdir -p "$PLUGIN_DIR"

@@ -240,7 +240,7 @@ transitions:
   - requirements_document
   - technical_specification
   type: serial
-  process: main
+  process: main_workflow
 - id: T_BA_RESEARCH
   from: business-analyst
   to: architecture-planner
