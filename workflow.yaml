@@ -108,15 +108,16 @@
 # - code-implementer state: determined by incoming transition. Use state to pick correct outgoing
 #   transition (T34 vs T_CODE_TO_SEC vs T_CODE_TO_UI vs T_CODE_TO_DATA vs T_CODE_TO_TEST vs T_CODE_TO_PERF).
 
-# Agent tools configuration:
-# - `tools` (allowlist): Agent can ONLY use listed tools. Used for agents with limited scope.
+# Agent configuration notes:
+# - `tools` (allowlist): NOT used in agent frontmatter — agents get all tools by default.
+#   Tool restrictions are platform-specific and should be handled at the platform level.
 # - `disallowedTools` (denylist): Agent can use ALL tools EXCEPT listed. Used for agents needing broad access
-#   (code-implementer, test-engineer, performance-analyst, devops-infrastructure-engineer) — they need many tools but must not
-#   launch sub-agents or use browser automation.
+#   (code-implementer, test-engineer, performance-analyst, devops-infrastructure-engineer) — they get all tools
+#   but must not launch sub-agents.
 # - `escalation_path` and `escalation_final_destination` are metadata-only fields for documentation.
 #   The orchestrator uses transitions, not these fields, for routing.
-# - `approvalMode` in agent frontmatter is platform-specific (Qwen Code):
-#   `auto-edit` = agent can edit files without user approval for each change.
+# - `approvalMode` is NOT used — it's a Qwen Code-specific field. Claude Code handles approval via permissions.
+# - `maxTurns` is supported by Claude Code and controls max agentic turns per agent.
 
 agents:
 - id: business-analyst
