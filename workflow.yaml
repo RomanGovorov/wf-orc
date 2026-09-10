@@ -2,13 +2,13 @@
 # Corrected version: aggregate audit handoff, routed re-review loops, independent counters.
 #
 # Conventions:
-# - Forced-pass: when iteration >= max (3), the agent MUST set the forward-progress
-#   signal regardless of remaining issues. For most agents this is pass=true.
-#   For devops-infrastructure-engineer: deployment_complete=true.
-#   Unresolved issues are documented in the output report.
+# - Forced-pass: when iteration >= max (3), the reviewing agent MUST pass
+#   regardless of remaining issues. Reviewing agents: code-reviewer,
+#   security-auditor, ui-ux-accessibility-specialist, data-engineering-architect,
+#   tech-docs-writer. Unresolved issues are documented in the output report.
 # - Phase context: Phase 1 transitions (T23a/b/c) have phase: initial_audit_collect.
-#   Phase 2 transitions have process: <bug_fix_process> which implicitly marks them as
-#   verification-phase. The orchestrator uses incoming transition to determine phase.
+#   Phase 2 transitions (T_SEC_VERIFY/PASS, T_UI_VERIFY/PASS, T_DATA_VERIFY/PASS)
+#   have phase: verification explicitly. The orchestrator reads this field.
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 # ORCHESTRATOR INSTRUCTIONS (for LLM-based orchestration via agent tool)
@@ -27,8 +27,11 @@
 # ┌─────────────────────────────┬──────────────────────────────┬────────────────────────────────────┐
 # │ Current Agent               │ Transition                   │ Condition = TRUE when              │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ project-manager             │ T01 → architecture-planner   │ backlog_approved = true                    │
-# │ project-manager             │ T70_REV → tech-docs-writer   │ documentation_needs_revision = true│
+# │ business-analyst            │ T_BA_EXIT → project-manager  │ task_type = "full"                 │
+# │ business-analyst            │ T_BA_RESEARCH → arch-planner │ task_type = "research"             │
+# ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+# │ project-manager             │ T01 → architecture-planner   │ backlog_approved                    │
+# │ project-manager             │ T70_REV → tech-docs-writer   │ documentation_needs_revision│
 # │                             │                              │ AND documentation_iteration < 3    │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ architecture-planner        │ T12a → security-auditor      │ architecture doc mentions security │
@@ -57,41 +60,41 @@
 # │                             │ T_UI_PASS → code-reviewer    │ ui_verification_pass OR iter >= 3  │
 # │ data-engineering-architect (Phase 2)│ T_DATA_VERIFY → code-implementer    │ findings NOT resolved AND iter < 3 │
 # │                             │ T_DATA_PASS → code-reviewer  │ data_verification_pass OR iter >= 3 │
-# │ data-engineering-architect          │ T_DATA_TO_DEVOPS → devops-infrastructure-engineer │ deployment_only = true │
+# │ data-engineering-architect          │ T_DATA_TO_DEVOPS → devops-infrastructure-engineer │ deployment_only │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ code-implementer            │ T34 → code-reviewer          │ no fix flags present (initial impl │
 # │                             │                              │ or fixing_review)                  │
-# │                             │ T_CODE_TO_SEC → security-auditor  │ security_fixes_complete = true     │
-# │                             │ T_CODE_TO_UI → ui-ux-accessibility-specialist    │ ui_fixes_complete = true           │
-# │                             │ T_CODE_TO_DATA → data-engineering-architect    │ data_fixes_complete = true         │
-# │                             │ T_CODE_TO_TEST → code-reviewer    │ test_fixes_complete = true         │
-# │                             │ T_CODE_TO_PERF → code-reviewer    │ perf_fixes_complete = true         │
+# │                             │ T_CODE_TO_SEC → security-auditor  │ security_fixes_complete     │
+# │                             │ T_CODE_TO_UI → ui-ux-accessibility-specialist    │ ui_fixes_complete           │
+# │                             │ T_CODE_TO_DATA → data-engineering-architect    │ data_fixes_complete         │
+# │                             │ T_CODE_TO_TEST → code-reviewer    │ test_fixes_complete         │
+# │                             │ T_CODE_TO_PERF → code-reviewer    │ perf_fixes_complete         │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ code-reviewer               │ T43 → code-implementer       │ issues_found = true AND iter < 3   │
-# │                             │ T43_TEST → code-implementer  │ test_fix_review = true AND         │
+# │ code-reviewer               │ T43 → code-implementer       │ issues_found AND iter < 3   │
+# │                             │ T43_TEST → code-implementer  │ test_fix_review AND         │
 # │                             │                              │ test_fix_review_iteration < 3      │
-# │                             │ T43_PERF → code-implementer  │ perf_fix_review = true AND         │
+# │                             │ T43_PERF → code-implementer  │ perf_fix_review AND         │
 # │                             │                              │ perf_fix_review_iteration < 3      │
-# │                             │ T45a → comprehensive-test-engineer         │ code_review_pass = true OR iter >= 3 │
-# │                             │ T45b → performance-analyst   │ code_review_pass = true OR iter >= 3 │
-# │                             │ T_DEVOPS_REVIEW_PASS         │ infrastructure_review_pass = true  │
+# │                             │ T45a → comprehensive-test-engineer         │ code_review_pass OR iter >= 3 │
+# │                             │ T45b → performance-analyst   │ code_review_pass OR iter >= 3 │
+# │                             │ T_DEVOPS_REVIEW_PASS         │ infrastructure_review_pass  │
 # │                             │ → devops-infrastructure-engineer            │                                  │
-# │                             │ T_DEVOPS_REVIEW_FAIL         │ infrastructure_review_pass = false │
+# │                             │ T_DEVOPS_REVIEW_FAIL         │ NOT infrastructure_review_pass     │
 # │                             │ → devops-infrastructure-engineer            │ AND iter < 3                     │
-# │                             │ T_DEVOPS_REVIEW_FORCE_PASS   │ infrastructure_review_pass = false │
+# │                             │ T_DEVOPS_REVIEW_FORCE_PASS   │ NOT infrastructure_review_pass     │
 # │                             │ → devops-infrastructure-engineer            │ AND iter >= 3                    │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ comprehensive-test-engineer │ T51_3 → code-implementer     │ bugs_found = true AND iter < 3     │
-# │                             │ T51_6 → devops-infrastructure-engineer │ tests_pass = true OR iter >= 3 │
+# │ comprehensive-test-engineer │ T51_3 → code-implementer     │ bugs_found AND iter < 3     │
+# │                             │ T51_6 → devops-infrastructure-engineer │ tests_pass OR iter >= 3 │
 # │ performance-analyst         │ T52_3 → code-implementer     │ bottlenecks_found AND iter < 3     │
-# │                             │ T52_6 → devops-infrastructure-engineer │ performance_pass = true OR iter >= 3 │
+# │                             │ T52_6 → devops-infrastructure-engineer │ performance_pass OR iter >= 3 │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ devops-infrastructure-engineer       │ T67 → tech-docs-writer       │ (deployment_complete AND NOT       │
 # │                             │                              │ infrastructure_code_needs_review) OR iter >= 3    │
-# │                             │ T_DEVOPS_REVIEW → code-reviewer   │ infrastructure_code_needs_review = true AND    │
+# │                             │ T_DEVOPS_REVIEW → code-reviewer   │ infrastructure_code_needs_review AND    │
 # │                             │                              │ infrastructure_review_iteration < 3              │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ tech-docs-writer            │ T70 → project-manager        │ documentation_complete = true      │
+# │ tech-docs-writer            │ T70 → project-manager        │ documentation_complete      │
 # │                             │                              │ OR documentation_iteration >= 3    │
 # └─────────────────────────────┴──────────────────────────────┴────────────────────────────────────┘
 #
@@ -108,7 +111,7 @@
 # Agent tools configuration:
 # - `tools` (allowlist): Agent can ONLY use listed tools. Used for agents with limited scope.
 # - `disallowedTools` (denylist): Agent can use ALL tools EXCEPT listed. Used for agents needing broad access
-#   (code-implementer, test-engineer, performance-analyst, devops) — they need many tools but must not
+#   (code-implementer, test-engineer, performance-analyst, devops-infrastructure-engineer) — they need many tools but must not
 #   launch sub-agents or use browser automation.
 # - `escalation_path` and `escalation_final_destination` are metadata-only fields for documentation.
 #   The orchestrator uses transitions, not these fields, for routing.
@@ -138,19 +141,19 @@ agents:
   name: security-auditor
   max_iterations: 3
   escalation_path: architecture-planner
-  escalation_final_destination: code-reviewer
+  escalation_final_destination: project-manager
   description: Security audit, vulnerabilities
 - id: ui-ux-accessibility-specialist
   name: ui-ux-accessibility-specialist
   max_iterations: 3
   escalation_path: architecture-planner
-  escalation_final_destination: code-reviewer
+  escalation_final_destination: project-manager
   description: UI specifications, accessibility, UX
 - id: data-engineering-architect
   name: data-engineering-architect
   max_iterations: 3
   escalation_path: architecture-planner
-  escalation_final_destination: code-reviewer
+  escalation_final_destination: project-manager
   description: ETL, SQL, data pipelines
 - id: code-implementer
   name: code-implementer
@@ -181,7 +184,8 @@ agents:
     transitions:
     - T_CODE_TO_DATA
   - id: fixing_review
-    description: Fixing issues identified by code-reviewer (T43 loop)
+    description: Fixing issues identified by code-reviewer (T43 loop). T34 is shared with
+      implementing state — both route to code-reviewer regardless of entry path.
     incoming_transition: T43
     transitions:
     - T34
@@ -219,6 +223,7 @@ agents:
   name: devops-infrastructure-engineer
   max_iterations: null
   escalation_path: null  # No escalation — after devops-infrastructure-engineer, workflow proceeds to T67/T_DEVOPS_REVIEW
+  escalation_final_destination: tech-docs-writer
   description: CI/CD, infrastructure, deployment
 - id: tech-docs-writer
   name: tech-docs-writer
@@ -227,6 +232,24 @@ agents:
   escalation_final_destination: project-manager
   description: Documentation, guides, ADRs
 transitions:
+- id: T_BA_EXIT
+  from: business-analyst
+  to: project-manager
+  condition: task_type = "full"
+  artifacts:
+  - requirements_document
+  - technical_specification
+  type: serial
+  process: main
+- id: T_BA_RESEARCH
+  from: business-analyst
+  to: architecture-planner
+  condition: task_type = "research"
+  artifacts:
+  - requirements_document
+  - cost_estimation
+  type: serial
+  process: research_workflow
 - id: T01
   from: project-manager
   to: architecture-planner
@@ -349,6 +372,7 @@ transitions:
     - infrastructure_requirements
     - data_findings_report
   type: serial
+  state: implementing
   audit_tracking:
   - security-auditor
   - ui-ux-accessibility-specialist
@@ -397,6 +421,8 @@ transitions:
   type: loop
   process: code_review_bug_fixes
   state: fixing_perf
+# Forced progress: when code_review_iteration >= 3, code-reviewer MUST set
+# code_review_pass=true to ensure forward progress even with unresolved issues.
 - id: T45a
   from: code-reviewer
   to: comprehensive-test-engineer
@@ -472,6 +498,8 @@ transitions:
   - deployment_manifests
   - ci_cd_pipeline
   - monitoring_dashboards
+  - terraform_configs
+  - kubernetes_manifests
   type: serial
 - id: T70
   from: tech-docs-writer
@@ -551,7 +579,6 @@ transitions:
   - security_checklist
   - security_findings_report
   type: serial
-  process: security_bug_fixes
   phase: verification
 - id: T_UI_VERIFY
   from: ui-ux-accessibility-specialist
@@ -579,7 +606,6 @@ transitions:
   - accessibility_requirements
   - ui_findings_report
   type: serial
-  process: ui_ux_bug_fixes
   phase: verification
 - id: T_DATA_VERIFY
   from: data-engineering-architect
@@ -609,7 +635,6 @@ transitions:
   - infrastructure_requirements
   - data_findings_report
   type: serial
-  process: data_engineering_bug_fixes
   phase: verification
 - id: T_DATA_TO_DEVOPS
   from: data-engineering-architect
@@ -678,25 +703,38 @@ transitions:
   - code_review_report
   type: serial
   process: infrastructure_review
+# Step notation in process definitions:
+#   [A | B | C] = conditional fan-out — one or more agents based on conditions
+#   [A + B]     = parallel fan-out — all agents launch simultaneously
 processes:
 - id: main_workflow
   name: Main Development Workflow
   description: >
     Primary development flow. Specialized Phase 1 audits return to architecture-planner for
     aggregation before implementation. Exception: when data-engineering-architect returns deployment_only=true,
-    it bypasses architecture-planner and goes directly to devops (T_DATA_TO_DEVOPS). In this case, T13 treats
+    it bypasses architecture-planner and goes directly to devops-infrastructure-engineer (T_DATA_TO_DEVOPS). In this case, T13 treats
     data audit as complete.
   steps:
   - project-manager
   - architecture-planner
   - '[security-auditor | ui-ux-accessibility-specialist | data-engineering-architect]'
-  - 'architecture-planner (or devops if data deployment_only)'
+  - 'architecture-planner (or devops-infrastructure-engineer if data deployment_only)'
   - code-implementer
   - code-reviewer
   - '[comprehensive-test-engineer + performance-analyst]'
+  - code-reviewer
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
+- id: research_workflow
+  name: Research Workflow
+  description: >
+    Research-only flow for requirements gathering and cost estimation.
+    business-analyst gathers requirements, architecture-planner creates high-level design.
+    No implementation — workflow stops after architecture review.
+  steps:
+  - business-analyst
+  - architecture-planner
 - id: security_bug_fixes
   name: Security Bug Fixes
   description: After security audit finds issues, code is fixed and re-verified
@@ -776,7 +814,7 @@ processes:
   - project-manager
 - id: infrastructure_review
   name: Infrastructure Review
-  description: After devops creates infrastructure code, code-reviewer reviews it (max 3 iterations).
+  description: After devops-infrastructure-engineer creates infrastructure code, code-reviewer reviews it (max 3 iterations).
   steps:
   - devops-infrastructure-engineer
   - code-reviewer
@@ -1061,7 +1099,7 @@ file_conventions:
     - docs/guides/api-docs.md
     - docs/guides/user-guide.md
     - docs/guides/runbooks/runbook-<NNN>_<slug>.md
-    - docs/guides/release-notes.md
+    - docs/guides/release-notes/CHANGELOG.md
     reads:
     - All docs/ subdirectories (collects all artifacts)
     - docs/requirements/ (initial TZ)
@@ -1155,7 +1193,7 @@ iteration_counters:
     owner: code-reviewer
     scope: infrastructure_code_review
     max: 3
-    description: code-reviewer reviews devops infra code → devops fixes → code-reviewer re-reviews
+    description: code-reviewer reviews devops-infrastructure-engineer infra code → devops-infrastructure-engineer fixes → code-reviewer re-reviews
   security_verification_iteration:
     owner: security-auditor
     scope: security_bug_fixes
@@ -1165,12 +1203,12 @@ iteration_counters:
     owner: ui-ux-accessibility-specialist
     scope: ui_ux_bug_fixes
     max: 3
-    description: ui-ux-specialist Phase 2 finds issues → code-implementer fixes → ui-ux-specialist re-verifies
+    description: ui-ux-accessibility-specialist Phase 2 finds issues → code-implementer fixes → ui-ux-accessibility-specialist re-verifies
   data_verification_iteration:
     owner: data-engineering-architect
     scope: data_engineering_bug_fixes
     max: 3
-    description: data-architect Phase 2 finds issues → code-implementer fixes → data-architect re-verifies
+    description: data-engineering-architect Phase 2 finds issues → code-implementer fixes → data-engineering-architect re-verifies
   test_iteration:
     owner: comprehensive-test-engineer
     scope: testing_bug_fixes

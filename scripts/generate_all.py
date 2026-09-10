@@ -96,8 +96,11 @@ def validate_workflow(workflow):
             raise ValueError(f"Counter '{counter_id}' references unknown owner: '{counter_data['owner']}'")
 
 
-def resolve_includes(content):
-    """Resolve {{INCLUDE:path}} directives by inserting fragment content."""
+def resolve_includes(content, max_depth=5):
+    """Resolve {{INCLUDE:path}} directives by inserting fragment content.
+
+    Supports nested includes up to max_depth levels.
+    """
     def replace_include(match):
         fragment_path = match.group(1)
         full_path = TEMPLATES_DIR / fragment_path
@@ -108,7 +111,12 @@ def resolve_includes(content):
 
     # Pattern: {{INCLUDE:path/to/file.md}}
     pattern = r"\{\{INCLUDE:([^}]+)\}\}"
-    return re.sub(pattern, replace_include, content)
+    for _ in range(max_depth):
+        new_content = re.sub(pattern, replace_include, content)
+        if new_content == content:
+            break
+        content = new_content
+    return content
 
 
 def generate_agents_table(agents):
@@ -163,7 +171,8 @@ def generate_condition_evaluation_map(agents, transitions):
         transitions_by_from[from_agent].append(t)
 
     # Derive agent order from workflow.yaml agents section
-    # Note: business-analyst is excluded — it has no outgoing transitions in workflow.yaml
+    # Note: business-analyst is excluded — it only appears in /wf-orc:full and /wf-orc:research,
+    # not in the standard /wf-orc:run workflow that this map documents.
     agent_order = [a["id"] for a in agents if a["id"] != "business-analyst"]
 
     for agent in agent_order:
@@ -260,6 +269,54 @@ def generate_file(template_path, output_path, workflow):
         raise
 
 
+def patch_readme(workflow):
+    """Patch README.md by replacing content between GENERATED markers.
+
+    README.md contains <!-- BEGIN GENERATED:type --> / <!-- END GENERATED:type -->
+    markers around tables that should stay in sync with workflow.yaml.
+    This function replaces the content between those markers with freshly
+    generated tables, preserving the markers themselves.
+    """
+    readme_path = PROJECT_ROOT / "README.md"
+    if not readme_path.exists():
+        print("Warning: README.md not found, skipping patch")
+        return
+
+    content = readme_path.read_text()
+    agents = workflow.get("agents", [])
+    counters = workflow.get("iteration_counters", {})
+
+    generators = {
+        "agents_table": lambda: generate_agents_table(agents),
+        "counters_table": lambda: generate_counters_table(counters),
+    }
+
+    for gen_type, generator_fn in generators.items():
+        pattern = (
+            r"(<!-- BEGIN GENERATED:" + re.escape(gen_type) + r" -->\n)"
+            r".*?"
+            r"(\n<!-- END GENERATED:" + re.escape(gen_type) + r" -->)"
+        )
+        match = re.search(pattern, content, flags=re.DOTALL)
+        if not match:
+            print(f"Warning: GENERATED:{gen_type} markers not found in README.md")
+            continue
+        replacement = r"\g<1>" + generator_fn() + r"\g<2>"
+        new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+        if new_content == content:
+            print(f"README.md:{gen_type} — already up to date")
+        else:
+            print(f"README.md:{gen_type} — updated")
+        content = new_content
+
+    try:
+        readme_path.write_text(content)
+        print(f"Patched {readme_path.relative_to(PROJECT_ROOT)}")
+    except IOError as e:
+        print(f"Error writing {readme_path}: {e}")
+        raise
+
+
 def main():
     """Main entry point."""
     try:
@@ -270,6 +327,10 @@ def main():
     except ValueError as e:
         print(f"Validation error: {e}")
         return 1
+
+    # Ensure output directories exist
+    output_dir = PROJECT_ROOT / "commands" / "wf-orc"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate command files
     commands = ["run", "full", "research"]
@@ -294,6 +355,9 @@ def main():
             return 1
     else:
         print(f"Warning: Template not found: {gemini_template.relative_to(PROJECT_ROOT)}")
+
+    # Patch README.md (replace GENERATED marker sections)
+    patch_readme(workflow)
 
     print("\nAll files generated successfully!")
     return 0

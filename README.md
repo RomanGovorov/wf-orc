@@ -13,6 +13,7 @@ Packages a complete orchestrator + 12 specialized agents + workflow definition i
 | **Cursor** | ✅ Rules support | Customize → Rules → Add Rule → Remote Rule (GitHub URL) |
 | **Codex** | ✅ Skills support | `git clone https://github.com/RomanGovorov/wf-orc ~/.agents/wf-orc && ln -s ~/.agents/wf-orc/skills ~/.agents/skills/wf-orc` |
 | **Hermes** | ✅ Plugin support | Via plugin manager (see Hermes documentation) |
+| **Claude Code** | ✅ Native plugin | `git clone` + `bash scripts/install_claude.sh` (skills-directory plugin) |
 
 **Support levels:**
 - **Full support** — Commands, skills, and extension manifest (slash commands + skills)
@@ -30,11 +31,13 @@ Each platform has its own manifest format with specific fields:
 | Cursor | `.cursor-plugin/plugin.json` | `name`, `version`, `description` | `author`, `displayName`, `skills`, `homepage`, `repository`, `license`, `keywords` |
 | Hermes | `.hermes-plugin/plugin.yaml` | `name`, `version`, `description` | `author`, `provides_hooks` |
 | Qwen Code | auto-generated | — | — |
+| Claude Code | `.claude-plugin/plugin.json` | `name`, `version`, `description` | `author`, `license` |
 
 **Notes:**
 - **Cursor** supports `displayName` (UI display name) and `skills` (path to skills directory)
 - **Qwen Code** auto-generates `qwen-extension.json` at install time — not needed in repo
 - **Gemini CLI** requires `contextFileName` pointing to the orchestrator context file
+- **Claude Code** uses `scripts/install_claude.sh` to install as a skills-directory plugin (`~/.claude/skills/wf-orc/`). The script copies files and transforms the structure: `GEMINI.md` → `CLAUDE.md`, flattens `commands/wf-orc/*.md` → `commands/*.md`
 
 ## Features
 
@@ -51,6 +54,7 @@ Each platform has its own manifest format with specific fields:
 wf-orc/
 ├── LICENSE                    # MIT License
 ├── .gitignore                 # Git ignore rules
+├── .claude-plugin/plugin.json # Claude Code plugin manifest
 ├── gemini-extension.json      # Gemini CLI manifest
 ├── .cursor-plugin/plugin.json # Cursor manifest
 ├── .codex-plugin/plugin.json  # Codex manifest
@@ -83,7 +87,9 @@ wf-orc/
 │   ├── commands/              # Command templates (run.md.tmpl, etc.)
 │   └── GEMINI.md.tmpl        # Context file template
 ├── scripts/                   # Utility scripts
-│   └── generate_all.py        # Generate all files from templates + workflow.yaml
+│   ├── generate_all.py        # Generate all files from templates + workflow.yaml
+│   ├── install_claude.sh      # Install wf-orc for Claude Code (copy + transform)
+│   └── uninstall_claude.sh    # Uninstall from Claude Code
 ├── agents/                    # Agent prompts (12 agents)
 └── docs/                      # Created at runtime (gitignored) — artifacts, tasks, reviews
 ```
@@ -120,6 +126,51 @@ ln -s ~/.agents/wf-orc/skills ~/.agents/skills/wf-orc
 ### Hermes
 
 Install via Hermes plugin manager (see Hermes documentation).
+
+### Claude Code
+
+wf-orc installs as a native Claude Code skills-directory plugin (`wf-orc@skills-dir`).
+
+```bash
+git clone https://github.com/RomanGovorov/wf-orc.git
+cd wf-orc
+bash scripts/install_claude.sh
+# Restart Claude Code or run /reload-plugins
+```
+
+The install script copies files into `~/.claude/skills/wf-orc/` and transforms the structure:
+
+- `GEMINI.md` → `CLAUDE.md` (orchestrator context)
+- `commands/wf-orc/*.md` → `commands/*.md` (flattened for plugin auto-discovery)
+- `skills/`, `agents/` — copied as-is
+- `.claude-plugin/plugin.json` — plugin manifest (auto-discovered)
+
+**Update** after `git pull` — just re-run install:
+```bash
+python3 scripts/generate_all.py   # regenerate commands and context
+bash scripts/install_claude.sh    # re-copy everything
+```
+
+**Uninstall:**
+```bash
+bash scripts/uninstall_claude.sh
+```
+
+**Usage:**
+
+| Command | Description |
+|---------|-------------|
+| `/wf-orc:run <task>` | Standard workflow (bugfix, task with existing TZ) |
+| `/wf-orc:research <task>` | Research requirements, estimate costs |
+| `/wf-orc:full <task>` | Full project from scratch |
+| `/wf-orc:orchestrate` | Auto-activate by context (trigger phrases) |
+
+**Manage plugin:**
+```bash
+claude plugin list                    # see wf-orc@skills-dir
+claude plugin disable wf-orc@skills-dir
+claude plugin enable wf-orc@skills-dir
+```
 
 ## Usage
 
@@ -158,6 +209,7 @@ User Request
   → project-manager (done)
 ```
 
+<!-- BEGIN GENERATED:agents_table -->
 ## Agents
 
 | Agent | Role |
@@ -174,7 +226,9 @@ User Request
 | `performance-analyst` | Profiling, load testing |
 | `devops-infrastructure-engineer` | CI/CD, infrastructure, deployment |
 | `tech-docs-writer` | Documentation, guides, ADRs |
+<!-- END GENERATED:agents_table -->
 
+<!-- BEGIN GENERATED:counters_table -->
 ## Iteration Counters
 
 | Counter | Owner | Max |
@@ -189,6 +243,7 @@ User Request
 | `test_iteration` | comprehensive-test-engineer | 3 |
 | `performance_iteration` | performance-analyst | 3 |
 | `documentation_iteration` | tech-docs-writer | 3 |
+<!-- END GENERATED:counters_table -->
 
 **Rule:** When counter ≥ max → force forward progress (document unresolved issues, continue workflow).
 
@@ -244,7 +299,8 @@ templates/
 │   ├── forced_progress.md
 │   ├── artifact_forwarding.md
 │   ├── user_interaction.md
-│   └── workflow_completion.md
+│   ├── workflow_completion.md
+│   └── no_skipping.md
 ├── commands/                     # Command templates
 │   ├── run.md.tmpl
 │   ├── full.md.tmpl
@@ -293,11 +349,11 @@ This regenerates:
 - `commands/wf-orc/research.md`
 - `GEMINI.md`
 
-### Step 4: Update README.md (if needed)
+### Step 4: Regenerate README.md tables
 
-If you added/removed agents or counters, update the tables in README.md manually:
-- `## Agents` table
-- `## Iteration Counters` table
+`patch_readme()` in `generate_all.py` automatically updates the agents and counters
+tables between `<!-- BEGIN GENERATED -->` / `<!-- END GENERATED -->` markers.
+No manual editing needed — just run `python3 scripts/generate_all.py`.
 
 ### Step 5: Verify
 

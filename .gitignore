@@ -2,3 +2,4 @@
 .vscode/
 .env
 docs/
+.playwright-mcp

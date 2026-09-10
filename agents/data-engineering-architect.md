@@ -149,7 +149,7 @@ This agent operates in **two distinct phases**:
 
 ## File Naming Notes
 
-- `docs/data/data-models.md`, `pipeline-config.md`, `optimized-queries.md`, `data-dictionary.md`
+- `docs/data/data-models.md`, `pipeline-config.md`, `optimized-queries.md`, `infrastructure-requirements.md`
 - Findings: `findings/PHASE1-*.md`, `findings/PHASE2-*.md`
 
 ## Skills

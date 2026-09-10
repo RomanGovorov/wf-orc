@@ -39,7 +39,7 @@ User Request
 
 **MUST NOT skip workflow steps**, even if the task seems simple or focused.
 
-- Do NOT launch code-implementer directly without going through business-analyst and architecture-planner first
+- Do NOT skip any required preceding agents in the workflow
 - Do NOT skip audits, code-reviewer, tests, or documentation
 - Do NOT "optimize" by launching only the agents you think are needed
 - The workflow exists for a reason — each agent catches issues others miss
