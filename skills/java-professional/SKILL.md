@@ -30,14 +30,14 @@ Complete guide to professional Java 21+ development — modern language features
 - When setting up a Spring Boot application
 - When designing JPA/Hibernate data layer
 - When configuring Spring Security (JWT, OAuth2)
-- When writing JUnit 5 tests
+- When writing JUnit 5/6 tests (JUnit 6 keeps the Jupiter programming model)
 - When structuring Gradle or Maven multi-module projects
 - When working with virtual threads and structured concurrency
 
 ## Core Concepts
 
 - **JVM Memory Model** — heap (young/old gen), stack, metaspace, direct memory; tune with `-Xms`, `-Xmx`, `-XX:MaxMetaspaceSize`
-- **Garbage Collection** — ZGC (default in 21+), G1GC for throughput; understand GC pauses, allocation rates, and `-XX:+UseZGC`
+- **Garbage Collection** — G1 is the default collector (JDK 21 and 25 LTS); ZGC is opt-in via `-XX:+UseZGC` for low-latency workloads (generational mode is the default since JDK 23 and the only mode since JDK 24); understand GC pauses and allocation rates
 - **Class Loading** — bootstrap → platform → application classloaders; classpath vs module path (JPMS)
 - **Platform Threads vs Virtual Threads** — virtual threads are lightweight, managed by JVM, ideal for I/O-bound workloads
 - **Records** — immutable data carriers with auto-generated `equals()`, `hashCode()`, `toString()`
@@ -126,35 +126,48 @@ try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
     });
 } // auto-closes: waits for all tasks to complete
 
-// Structured concurrency (preview in 21)
-// Requires: --enable-preview flag (preview feature in Java 21-22)
+// Structured concurrency — Java 25 (JEP 505, fifth preview; STILL a preview feature)
+// Requires: --enable-preview (javac --release 25 --enable-preview)
+// import java.util.concurrent.StructuredTaskScope;
 record UserWithOrders(User user, List<Order> orders) {}
 
 UserWithOrders fetchUserWithOrders(long userId) throws Exception {
-    try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-        Subtask<User> userTask = scope.fork(() -> userService.getById(userId));
-        Subtask<List<Order>> ordersTask = scope.fork(() -> orderService.getByUserId(userId));
+    // open() uses the default join policy: fail if any subtask fails
+    try (var scope = StructuredTaskScope.open()) {
+        var userTask = scope.fork(() -> userService.getById(userId));
+        var ordersTask = scope.fork(() -> orderService.getByUserId(userId));
 
-        scope.join().throwIfFailed();
+        scope.join(); // waits for both tasks; throws FailedException if any failed
 
         return new UserWithOrders(userTask.get(), ordersTask.get());
     }
 }
+// Other policies: StructuredTaskScope.open(StructuredTaskScope.Joiner.awaitAll()),
+// Joiner.awaitAllSuccessfulOrThrow(), Joiner.anySuccessfulResultOrThrow(),
+// Joiner.allSuccessfulOrThrow(), Joiner.allUntil(predicate) — join() then returns
+// the joiner's result instead of null.
+// Note: the JDK 21–24 previews used `new StructuredTaskScope.ShutdownOnFailure()`
+// + `scope.join().throwIfFailed()`; that API was replaced in Java 25 (JEP 505).
 
-// Pinning avoidance — don't use synchronized with virtual threads
-// ❌ BAD: synchronized blocks pin virtual threads to carrier
-synchronized (lock) {
-    httpClient.send(request, BodyHandlers.ofString()); // I/O while pinned
-}
+// synchronized + virtual threads — pinning rules depend on the JDK version
+// JDK 21–23: synchronized blocks pin the virtual thread to its carrier thread
+// JDK 24+:   pinning eliminated (JEP 491) — virtual threads unmount inside synchronized
 
-// ✅ GOOD: use ReentrantLock instead
+// JDK 21–23 only: prefer ReentrantLock around blocking calls
 private final ReentrantLock lock = new ReentrantLock();
 
 lock.lock();
 try {
-    httpClient.send(request, BodyHandlers.ofString()); // no pinning
+    httpClient.send(request, BodyHandlers.ofString()); // unmounts safely on 21–23
 } finally {
     lock.unlock();
+}
+
+// JDK 24+: synchronized is fine again — no carrier pinning
+private final Object monitor = new Object();
+
+synchronized (monitor) {
+    httpClient.send(request, BodyHandlers.ofString()); // virtual thread unmounts (JEP 491)
 }
 ```
 
@@ -264,7 +277,8 @@ public interface UserRepository extends JpaRepository<User, Long>,
     @Query("SELECT u FROM User u WHERE u.role = :role AND u.createdAt > :since")
     List<User> findActiveByRole(@Param("role") Role role, @Param("since") Instant since);
 
-    @Query(value = "SELECT * FROM users WHERE email LIKE %:domain", nativeQuery = true)
+    // Use CONCAT to safely build the LIKE pattern — avoids invalid SQL from "LIKE %:domain"
+    @Query(value = "SELECT * FROM users WHERE email LIKE CONCAT('%', :domain, '%')", nativeQuery = true)
     List<User> findByEmailDomain(@Param("domain") String domain);
 
     // Paginated query
@@ -324,10 +338,11 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
+            // ONE JWT mechanism only: oauth2ResourceServer decodes and validates tokens.
+            // Don't also addFilterBefore() a custom JWT filter — that authenticates twice.
             .oauth2ResourceServer(oauth2 -> oauth2
                 .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
             )
-            .addFilterBefore(jwtAuthenticationFilter(), UsernamePasswordAuthenticationFilter.class)
             .build();
     }
 
@@ -375,8 +390,10 @@ public class OrderService {
     @PreAuthorize("hasRole('ADMIN') or #userId == authentication.principal.id")
     public List<Order> getOrdersForUser(Long userId) { ... }
 
-    @PreAuthorize("hasRole('ADMIN')")
-    @PostAuthorize("returnObject.owner == authentication.principal.username")
+    // Admins may fetch ANY order; users only their own — checked AFTER execution.
+    // Don't add a restrictive @PreAuthorize("hasRole('ADMIN')") here: it would let
+    // only admins in, then the @PostAuthorize owner check would fail them anyway.
+    @PostAuthorize("hasRole('ADMIN') or returnObject.owner == authentication.principal.username")
     public Order getOrder(Long orderId) { ... }
 }
 ```
@@ -511,7 +528,7 @@ public class GlobalExceptionHandler {
 }
 ```
 
-### 8. Testing (JUnit 5 + Mockito + Testcontainers)
+### 8. Testing (JUnit 5/6 + Mockito + Testcontainers)
 
 ```java
 // Unit test with Mockito
@@ -528,11 +545,9 @@ class UserServiceTest {
         // given
         var request = new CreateUserRequest("John", "john@example.com", 30, null);
         when(userRepository.existsByEmail("john@example.com")).thenReturn(false);
-        when(userRepository.save(any(User.class))).thenAnswer(inv -> {
-            User u = inv.getArgument(0);
-            u.setId(1L);
-            return u;
-        });
+        // The entity has no setId() — JPA assigns the generated id on persist,
+        // so the mock simply returns the argument unchanged
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0));
 
         // when
         UserResponse result = userService.create(request);
@@ -570,7 +585,7 @@ class UserServiceTest {
 class UserControllerIntegrationTest {
 
     @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16")
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17")
         .withDatabaseName("testdb")
         .withUsername("test")
         .withPassword("test");
@@ -618,7 +633,7 @@ include 'app'
 // build.gradle (root)
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.4.0' apply false
+    id 'org.springframework.boot' version '4.1.1' apply false
     id 'io.spring.dependency-management' version '1.1.7' apply false
 }
 
@@ -639,12 +654,13 @@ subprojects {
     }
 
     dependencies {
-        compileOnly 'org.projectlombok:lombok:1.18.34'
-        annotationProcessor 'org.projectlombok:lombok:1.18.34'
+        compileOnly 'org.projectlombok:lombok:1.18.48'
+        annotationProcessor 'org.projectlombok:lombok:1.18.48'
 
-        testImplementation 'org.junit.jupiter:junit-jupiter:5.11.0'
-        testImplementation 'org.assertj:assertj-core:3.26.3'
-        testImplementation 'org.mockito:mockito-core:5.14.0'
+        // JUnit 6.x continues the JUnit 5 (Jupiter) programming model; requires Java 17+
+        testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+        testImplementation 'org.assertj:assertj-core:3.27.7'
+        testImplementation 'org.mockito:mockito-core:5.23.0'
     }
 
     test {
@@ -664,7 +680,7 @@ dependencies {
 
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1' // springdoc 3.x = Spring Boot 4
 }
 
 // app/build.gradle — the bootable module
@@ -866,18 +882,20 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
 
 | Mistake | Why It's Bad | Fix |
 |---------|-------------|-----|
-| `synchronized` with virtual threads | Pins virtual thread to carrier thread, defeating the purpose | Use `ReentrantLock` instead |
+| `synchronized` with virtual threads (JDK 21–23) | Pins virtual thread to carrier thread on JDK 21–23, defeating the purpose; pinning eliminated in JDK 24 (JEP 491) | JDK 21–23: use `ReentrantLock`. JDK 24+: `synchronized` is safe |
 | `Optional.get()` without `isPresent()` | `NoSuchElementException` at runtime | `orElseThrow()`, `orElseGet()`, `ifPresent()` |
 | Field injection (`@Autowired`) | Untestable, hides dependencies, mutable | Constructor injection |
 | Parallel streams for I/O | Blocks ForkJoinPool common pool | Virtual threads or `CompletableFuture` with custom executor |
-| N+1 queries in JPA | One query per entity in a loop | `@EntityGraph`, `JOIN FETCH`, `selectinload` via `@Fetch(FetchMode.SUBSELECT)` |
+| N+1 queries in JPA | One query per entity in a loop | `@EntityGraph`, JPQL `JOIN FETCH`, or batch loading via `@Fetch(FetchMode.SELECT)` + `@BatchSize` (`FetchMode.SUBSELECT` is discouraged in Hibernate 6 in favor of batch/select loading; it is NOT annotated `@Deprecated` — "discouraged" rather than formally deprecated; `selectinload` is SQLAlchemy, not JPA) |
 | `equals()` on JPA entities | Generated IDs are null before persist; breaks `hashCode` contract | Use business key or `@NaturalId` for equality |
 | Catching `Exception` broadly | Hides bugs, makes debugging impossible | Catch specific exceptions; let unexpected ones propagate |
-| Mutable `@ConfigurationProperties` | Thread safety issues, accidental mutation | Use `@ConstructorBinding` with records or `@Value` |
+| Mutable `@ConfigurationProperties` | Thread safety issues, accidental mutation | Bind immutable records — constructor binding is implicit since Spring Boot 3.0; `@ConstructorBinding` is only needed to disambiguate multiple constructors |
 | Not using `@Transactional` boundaries | Lazy loading fails outside session; partial updates | Apply `@Transactional` at service method level |
 | Logging with string concatenation | `log.debug("User " + user)` — always evaluated even if DEBUG is off | `log.debug("User {}", user)` — parameterized logging |
 
 ## Context7 Integration
+
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
@@ -886,5 +904,3 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
 | JUnit 5 | (query "JUnit 5") | Test annotations, extensions |
 | Gradle | (query "Gradle") | Build configuration, multi-module |
 | Hibernate | `/hibernate/hibernate-orm` | JPA patterns, fetching strategies |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs`.

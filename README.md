@@ -24,20 +24,20 @@ Packages a complete orchestrator + 12 specialized agents + workflow definition i
 
 Each platform has its own manifest format with specific fields:
 
-| Platform | Manifest File | Required Fields | Optional Fields |
-|----------|---------------|-----------------|-----------------|
-| Gemini CLI | `gemini-extension.json` | `name`, `version`, `description`, `contextFileName` | — |
+| Platform | Manifest File | Required Fields | Optional Fields (non-exhaustive) |
+|----------|---------------|-----------------|----------------------------------|
+| Gemini CLI | `gemini-extension.json` | `name`, `version`, `description`, `contextFileName` | `author`, `license`, `homepage`, `repository`, `keywords` |
 | Codex | `.codex-plugin/plugin.json` | `name`, `version`, `description` | `author`, `homepage`, `repository`, `license`, `keywords`, `skills`, `interface` |
 | Cursor | `.cursor-plugin/plugin.json` | `name`, `version`, `description` | `author`, `displayName`, `skills`, `homepage`, `repository`, `license`, `keywords` |
-| Hermes | `.hermes-plugin/plugin.yaml` | `name`, `version`, `description` | `author`, `provides_hooks` |
+| Hermes | `.hermes-plugin/plugin.yaml` | `name`, `version`, `description` | `author`, `license`, `homepage`, `repository`, `keywords`, `skills` |
 | Qwen Code | auto-generated | — | — |
-| Claude Code | `.claude-plugin/plugin.json` | `name`, `version`, `description` | `author`, `license` |
+| Claude Code | `.claude-plugin/plugin.json` | `name`, `version`, `description` | `displayName`, `author`, `license`, `homepage`, `repository`, `keywords` |
 
 **Notes:**
 - **Cursor** supports `displayName` (UI display name) and `skills` (path to skills directory)
-- **Qwen Code** auto-generates `qwen-extension.json` at install time — not needed in repo
+- **Qwen Code** auto-generates `qwen-extension.json` from `gemini-extension.json` at install time via `qwen extensions install` — no explicit `.qwen-plugin/plugin.json` manifest needed in the repo
 - **Gemini CLI** requires `contextFileName` pointing to the orchestrator context file
-- **Claude Code** uses `scripts/install_claude.sh` to install as a skills-directory plugin (`~/.claude/skills/wf-orc/`). The script copies files and transforms the structure: `GEMINI.md` → `CLAUDE.md`, flattens `commands/wf-orc/*.md` → `commands/*.md`
+- **Claude Code** uses `scripts/install_claude.sh` to install as a skills-directory plugin (`~/.claude/skills/wf-orc/`). The script copies files and transforms the structure: `commands/wf-orc/*.md` → `commands/*.md` (flattened; subdirectories add no namespace in Claude Code) with `{{args}}` → `$ARGUMENTS`; `skills/`, `agents/`, `workflow.yaml` as-is. `GEMINI.md` is NOT copied — Claude Code does not load CLAUDE.md from plugin roots; orchestrator context is delivered by the self-contained commands and the `orchestrate` skill
 
 ## Features
 
@@ -54,13 +54,14 @@ Each platform has its own manifest format with specific fields:
 wf-orc/
 ├── LICENSE                    # MIT License
 ├── .gitignore                 # Git ignore rules
+├── requirements.txt           # Python dependencies (PyYAML)
 ├── .claude-plugin/plugin.json # Claude Code plugin manifest
 ├── gemini-extension.json      # Gemini CLI manifest
 ├── .cursor-plugin/plugin.json # Cursor manifest
 ├── .codex-plugin/plugin.json  # Codex manifest
 ├── .hermes-plugin/plugin.yaml # Hermes manifest
-├── GEMINI.md                  # Orchestrator context for Gemini CLI / Codex / Cursor
-├── AGENTS.md                  # Context pointer for Codex/Cursor
+├── GEMINI.md                  # Orchestrator context (Gemini CLI, Qwen Code via contextFileName; not loaded by Claude Code)
+├── AGENTS.md                  # Full inline copy of GEMINI.md for Codex/Cursor (these platforms don't resolve file pointers)
 ├── workflow.yaml              # Single source of truth for transitions
 ├── commands/                  # Qwen Code commands
 │   └── wf-orc/
@@ -83,7 +84,7 @@ wf-orc/
 │   ├── kotlin-professional/   # Kotlin patterns
 │   └── pm-task-tracker/       # External PM dashboard integration
 ├── templates/                 # Template files for code generation
-│   ├── fragments/             # Reusable content fragments
+│   ├── fragments/             # Reusable content fragments (13 files)
 │   ├── commands/              # Command templates (run.md.tmpl, etc.)
 │   └── GEMINI.md.tmpl        # Context file template
 ├── scripts/                   # Utility scripts
@@ -91,6 +92,7 @@ wf-orc/
 │   ├── install_claude.sh      # Install wf-orc for Claude Code (copy + transform)
 │   └── uninstall_claude.sh    # Uninstall from Claude Code
 ├── agents/                    # Agent prompts (12 agents)
+├── tests/                     # Compatibility test templates
 └── docs/                      # Created at runtime (gitignored) — artifacts, tasks, reviews
 ```
 
@@ -140,10 +142,10 @@ bash scripts/install_claude.sh
 
 The install script copies files into `~/.claude/skills/wf-orc/` and transforms the structure:
 
-- `GEMINI.md` → `CLAUDE.md` (orchestrator context)
-- `commands/wf-orc/*.md` → `commands/*.md` (flattened for plugin auto-discovery)
-- `skills/`, `agents/` — copied as-is
-- `.claude-plugin/plugin.json` — plugin manifest (auto-discovered)
+- `commands/wf-orc/*.md` → `commands/*.md` (flattened) + `{{args}}` → `$ARGUMENTS` — yields `/wf-orc:run`, `/wf-orc:research`, `/wf-orc:full`
+- `skills/`, `agents/`, `workflow.yaml` — copied as-is
+- `.claude-plugin/plugin.json` — plugin manifest (auto-discovered as `wf-orc@skills-dir`)
+- `GEMINI.md` is NOT copied: Claude Code does not load a plugin-root `CLAUDE.md` into context. Orchestrator context reaches Claude sessions through the self-contained command files and the `orchestrate` skill (in Qwen Code, `GEMINI.md` is loaded via `contextFileName`)
 
 **Update** after `git pull` — just re-run install:
 ```bash
@@ -163,7 +165,7 @@ bash scripts/uninstall_claude.sh
 | `/wf-orc:run <task>` | Standard workflow (bugfix, task with existing TZ) |
 | `/wf-orc:research <task>` | Research requirements, estimate costs |
 | `/wf-orc:full <task>` | Full project from scratch |
-| `/wf-orc:orchestrate` | Auto-activate by context (trigger phrases) |
+| `orchestrate` skill | Auto-activates on trigger phrases (no slash command) |
 
 **Manage plugin:**
 ```bash
@@ -250,7 +252,7 @@ User Request
 ## How It Works
 
 1. **Skills** (`skills/*/SKILL.md`) — Agent Skills standard, works on all platforms
-2. **Commands** (`commands/wf-orc/*.md`) — Qwen Code specific slash commands
+2. **Commands** (`commands/wf-orc/*.md`) — slash commands (`{{args}}` for Qwen Code; `install_claude.sh` produces flattened `$ARGUMENTS` copies for Claude Code)
 3. **Agents** (`agents/*.md`) — Agent prompts loaded by orchestrator
 4. **Context** (`GEMINI.md`) — Orchestrator context for Gemini CLI / Codex / Cursor
 5. **Workflow** (`workflow.yaml`) — Single source of truth for transitions and conditions
@@ -269,10 +271,13 @@ python scripts/generate_all.py
 
 | Output File | Template | Generated From |
 |-------------|----------|----------------|
-| `commands/wf-orc/run.md` | `templates/commands/run.md.tmpl` | workflow.yaml transitions + counters |
-| `commands/wf-orc/full.md` | `templates/commands/full.md.tmpl` | workflow.yaml counters |
-| `commands/wf-orc/research.md` | `templates/commands/research.md.tmpl` | (static content) |
+| `commands/wf-orc/run.md` | `templates/commands/run.md.tmpl` | workflow.yaml transitions + counters + condition map |
+| `commands/wf-orc/full.md` | `templates/commands/full.md.tmpl` | static fragments only (no GENERATED directives) |
+| `commands/wf-orc/research.md` | `templates/commands/research.md.tmpl` | static content |
 | `GEMINI.md` | `templates/GEMINI.md.tmpl` | workflow.yaml agents + counters |
+| `AGENTS.md` | (copy of `GEMINI.md`) | byte-identical copy for platforms that don't resolve file pointers |
+
+**Note:** BA-transitions (`T_BA_EXIT`, `T_BA_RESEARCH`) are excluded from the generated condition map — they apply only to `/wf-orc:full` and `/wf-orc:research` entry flows.
 
 ### Template directives:
 
@@ -292,15 +297,20 @@ python scripts/generate_all.py
 
 ```
 templates/
-├── fragments/                    # Reusable content fragments
-│   ├── initialize_counters.md
-│   ├── phase_detection.md
-│   ├── code_implementer_mapping.md
-│   ├── forced_progress.md
+├── fragments/                    # Reusable content fragments (13 files)
 │   ├── artifact_forwarding.md
+│   ├── artifact_validation.md
+│   ├── code_implementer_mapping.md
+│   ├── derived_conditions.md
+│   ├── forced_progress.md
+│   ├── glossary.md
+│   ├── initialize_counters.md
+│   ├── logging.md
+│   ├── no_skipping.md
+│   ├── parallel_execution.md
+│   ├── phase_detection.md
 │   ├── user_interaction.md
-│   ├── workflow_completion.md
-│   └── no_skipping.md
+│   └── workflow_completion.md
 ├── commands/                     # Command templates
 │   ├── run.md.tmpl
 │   ├── full.md.tmpl
@@ -361,17 +371,23 @@ Run project verification (see [Project Verification](#project-verification) belo
 
 ### Step 6: Bump version
 
-Update version in all plugin manifests:
+Update version in all plugin manifests and test templates:
 
 ```bash
-# Update version in JSON manifests (example: 0.5.1 → 0.5.2)
-sed -i 's/"version": "0.5.1"/"version": "0.5.2"/g' \
+# Update version in JSON manifests (example: 0.6.0 → 0.6.1)
+sed -i 's/"version": "0.6.0"/"version": "0.6.1"/g' \
   gemini-extension.json \
+  .claude-plugin/plugin.json \
   .codex-plugin/plugin.json \
   .cursor-plugin/plugin.json
 
 # Update version in YAML manifest
-sed -i 's/^version: 0.5.1/version: 0.5.2/' .hermes-plugin/plugin.yaml
+sed -i 's/^version: 0.6.0/version: 0.6.1/' .hermes-plugin/plugin.yaml
+
+# Update version in test templates
+sed -i 's/wf-orc version:\*\* 0.6.0/wf-orc version:** 0.6.1/g' \
+  tests/qwen-compatibility-test.md \
+  tests/claude-compatibility-test.md
 ```
 
 ### Step 7: Commit
@@ -401,9 +417,9 @@ Run tech-docs-writer and code-reviewer in parallel for a full verification from 
 <summary>tech-docs-writer prompt</summary>
 
 ```
-Perform a full documentation audit of the wf-orc project at /home/gans/ai/wf-orc from scratch.
+Perform a full documentation audit of the wf-orc project from scratch.
 
-Context: wf-orc is a multi-agent workflow orchestrator for AI platforms (Qwen Code, Gemini CLI, Cursor, Codex, Hermes). It orchestrates 12 specialized agents.
+Context: wf-orc is a multi-agent workflow orchestrator for AI platforms (Qwen Code, Claude Code, Gemini CLI, Cursor, Codex, Hermes). It orchestrates 12 specialized agents.
 
 IMPORTANT: Check file CONTENTS, not just structure. Read each file completely.
 
@@ -476,7 +492,7 @@ Create a detailed report with ALL found issues:
 <summary>code-reviewer prompt</summary>
 
 ```
-Perform a full code review of the wf-orc project at /home/gans/ai/wf-orc from scratch.
+Perform a full code review of the wf-orc project from scratch.
 
 Context: wf-orc is a multi-agent workflow orchestrator for AI platforms. The project consists of markdown documentation, YAML workflow, JSON plugin manifests, and Python scripts.
 
@@ -485,10 +501,10 @@ Context: wf-orc is a multi-agent workflow orchestrator for AI platforms. The pro
 ### 1. workflow.yaml (central file)
 - YAML syntax validity
 - All 12 agents are defined correctly
-- All transitions are valid — no cycles, dead ends, unreachable states
+- All transitions are valid — no **unbounded** cycles (every loop is guarded by an iteration counter), no dead ends, no unreachable states
 - Conditions are correct and consistent
 - Iteration counters (10 items) — all defined
-- Process definitions (9 processes) are correct
+- Process definitions (10 processes) are correct
 - code-implementer states (7 states) are correct
 - Escalation paths are correct
 - Parallel transitions (T45a, T45b) are correct

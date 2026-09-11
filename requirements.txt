@@ -1,0 +1,2 @@
+# Required for scripts/generate_all.py
+PyYAML>=5.0

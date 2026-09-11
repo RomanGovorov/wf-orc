@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -113,7 +113,7 @@ jobs:
     needs: lint
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_PASSWORD: test
           POSTGRES_DB: test_db
@@ -127,7 +127,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -147,9 +147,14 @@ jobs:
             --junitxml=junit.xml
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
-          file: ./coverage.xml
+          # v4 renamed the input `file` -> `files` (unknown inputs are silently
+          # ignored, so the old name just falls back to autodiscovery);
+          # v5 requires CODECOV_TOKEN for private repos (tokenless uploads only
+          # work for fork -> public-upstream PRs).
+          files: ./coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results
         if: always()
@@ -170,17 +175,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           push: true
           tags: |
@@ -193,12 +198,15 @@ jobs:
 ### Pattern 2: Docker Multi-Stage Build
 
 ```dockerfile
-# Build stage — compile/test dependencies
+# Build stage — build/test tools + pre-compiled wheels for runtime deps
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
 COPY requirements.txt requirements-build.txt ./
-RUN pip install --no-cache-dir --prefix=/install -r requirements-build.txt
+# Build wheels for the RUNTIME dependencies (installed in the final stage)
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+# Build/test-only tools (compilers, pytest, ruff, ...) — stay in this stage
+RUN pip install --no-cache-dir -r requirements-build.txt
 
 # Copy application code
 COPY . .
@@ -211,8 +219,12 @@ FROM python:3.12-slim AS production
 # Non-root user — security best practice
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Install only runtime dependencies
-COPY --from=builder /install /usr/local
+# Install ONLY runtime dependencies from the pre-built wheels —
+# build/test tools from requirements-build.txt never reach this image
+COPY --from=builder /wheels /wheels
+COPY --from=builder requirements.txt ./
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
+    && rm -rf /wheels requirements.txt
 COPY --from=builder --chown=appuser:appuser /app /app
 
 WORKDIR /app
@@ -227,9 +239,16 @@ USER appuser
 # Expose port
 EXPOSE 8000
 
-# Run with gunicorn — production server
+# Run with gunicorn — production server.
+# requirements.txt must include gunicorn, uvicorn AND the separate
+# `uvicorn-worker` package: the built-in `uvicorn.workers.UvicornWorker` class
+# is discouraged since uvicorn 0.30 — the maintained worker lives in the
+# separate `uvicorn-worker` package (`uvicorn_worker.UvicornWorker`). The
+# legacy module still exists in current uvicorn but is no longer updated.
+# (Alternative without gunicorn: `uvicorn myapp.main:app --workers 4` —
+# uvicorn has native multi-process support since 0.30.)
 CMD ["gunicorn", "myapp.main:app", \
-     "-w", "4", "-k", "uvicorn.workers.UvicornWorker", \
+     "-w", "4", "-k", "uvicorn_worker.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--access-logfile", "-", \
      "--error-logfile", "-"]
@@ -237,21 +256,35 @@ CMD ["gunicorn", "myapp.main:app", \
 
 ### Pattern 3: Terraform — AWS Infrastructure (FastAPI)
 
+> **Excerpt** — the block below references variables (`var.aws_region`, `var.app_name`,
+> `var.ecr_repository_url`, `var.image_tag`, `var.environment`, `var.desired_count`,
+> `var.public_subnet_ids`, `var.private_subnet_ids`, `var.vpc_id`) and resources
+> (`aws_iam_role.ecs_execution`, `aws_iam_role.ecs_task`, `aws_cloudwatch_log_group.this`,
+> `aws_ssm_parameter.db_url`, `aws_ssm_parameter.secret_key`, `aws_security_group.alb`,
+> `aws_security_group.ecs_tasks`, `aws_lb_listener.this`) that are defined in
+> companion files (`variables.tf`, `iam.tf`, `networking.tf`, `alb.tf`, etc.).
+> Treat it as an illustrative fragment — wire up the missing definitions before
+> applying.
+
 ```hcl
-# main.tf
+# main.tf — excerpt (requires variable/resource definitions in companion files)
 terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
   }
-  required_version = ">= 1.5"
+  required_version = ">= 1.10"  # S3-native state locking (use_lockfile) needs >= 1.10
 
   backend "s3" {
     bucket = "myapp-terraform-state"
     key    = "production/terraform.tfstate"
     region = "us-east-1"
+    # S3-native locking via conditional writes (bucket versioning must be ON).
+    # On Terraform < 1.10 use dynamodb_table = "myapp-terraform-locks" instead
+    # (DynamoDB-based locking is deprecated in newer Terraform versions).
+    use_lockfile = true
   }
 }
 
@@ -299,7 +332,10 @@ resource "aws_ecs_task_definition" "this" {
         }
       }
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+        # python:3.12-slim (Pattern 2) ships no curl — reuse the Dockerfile's
+        # urllib probe, otherwise the healthcheck fails forever and the ECS
+        # service never stabilizes.
+        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -440,7 +476,12 @@ spec:
     spec:
       containers:
         - name: myapp
-          image: ghcr.io/org/myapp:${{ github.sha }}  # Use SHA-based tags, never :latest in production
+          # Placeholder tag — the deploy pipeline pins the commit SHA at deploy
+          # time (see "Pinning the image tag" below). A static manifest CANNOT
+          # contain ${{ github.sha }}: GitHub expressions only interpolate
+          # inside workflow runs, so kubectl/ArgoCD would see the literal
+          # string (an invalid image ref). Use SHA-based tags, never :latest.
+          image: ghcr.io/org/myapp:stable
           ports:
             - containerPort: 8000
           resources:
@@ -487,6 +528,18 @@ spec:
         target:
           type: Utilization
           averageUtilization: 80
+```
+
+**Pinning the image tag at deploy time** — the workflow run expands `${{ github.sha }}` and rewrites the manifest's placeholder before apply/commit:
+
+```yaml
+# Deploy job step (inside a workflow run, where the expression IS interpolated).
+# GitOps variant: commit the updated kustomization.yaml and let ArgoCD sync it.
+- name: Pin image tag and deploy
+  run: |
+    cd k8s/production
+    kustomize edit set image ghcr.io/org/myapp:${{ github.sha }}
+    kustomize build . | kubectl apply -f -
 ```
 
 ### Pattern 6: Canary Deployment
@@ -574,7 +627,7 @@ jobs:
         node-version: [20, 22]
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_DB: testdb
           POSTGRES_PASSWORD: testpass
@@ -582,7 +635,7 @@ jobs:
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -600,8 +653,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v5
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v6
         with:
           context: .
           push: false
@@ -623,18 +676,21 @@ jobs:
       - uses: actions/checkout@v4
 
       # Semgrep — static analysis
+      # (semgrep/semgrep-action is deprecated — install the CLI and run
+      #  `semgrep ci`; add SEMGREP_APP_TOKEN env for the Semgrep AppSec Platform)
+      # IMPORTANT: use `pipx install semgrep` (not `pip install`) — ubuntu-24.04
+      # enforces PEP 668 (externally-managed-environment), so system `pip install`
+      # fails. `pipx` is preinstalled on the runner and uses an isolated venv.
       - name: Run Semgrep
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: >-
+        env:
+          SEMGREP_RULES: >-
             p/python
             p/owasp-top-ten
             p/security-audit
-        env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_TOKEN }}
+        run: pipx install semgrep && semgrep ci
 
       # Bandit — Python-specific security linter
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.12' }
       - run: pip install bandit
       - run: bandit -r src/ -f json -o bandit-report.json
@@ -644,11 +700,26 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gitleaks-action v2 requires a license key for organization repos;
+          # see https://github.com/gitleaks/gitleaks-action#usage
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   container-scan:
-    needs: build
     runs-on: ubuntu-latest
+    # upload-sarif requires security-events: write to push SARIF results to
+    # the repo's Security tab; contents: read is the checkout default, stated
+    # explicitly for clarity.
+    permissions:
+      contents: read
+      security-events: write
     steps:
+      - uses: actions/checkout@v4
+
+      # Runners are ephemeral — an image built in another workflow/job does NOT
+      # exist here; build it locally first, then scan the local ref.
+      - name: Build image to scan
+        run: docker build -t app:${{ github.sha }} .
+
       - uses: aquasecurity/trivy-action@v0.29.0
         with:
           image-ref: app:${{ github.sha }}
@@ -669,37 +740,43 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_DB: migration_test
           POSTGRES_PASSWORD: testpass
         ports: ['5432:5432']
+    env:
+      # Job-level env — every alembic step below needs DATABASE_URL
+      DATABASE_URL: postgresql://postgres:testpass@localhost:5432/migration_test
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.12' }
       - run: pip install -e ".[dev]"
 
-      # Check for uncommitted migrations
-      - name: Check autogenerate produces no changes
-        run: |
-          alembic revision --autogenerate -m "check"
-          if [ -n "$(git status --porcelain alembic/versions/)" ]; then
-            echo "ERROR: Uncommitted migration detected. Run 'alembic revision --autogenerate' locally."
-            exit 1
-          fi
-
-      # Run all migrations
+      # Apply all migrations FIRST — autogenerate must diff the models against
+      # the MIGRATED schema, not an empty database (against an empty schema it
+      # would emit the entire initial migration and always "detect" drift)
       - name: Run migrations
         run: alembic upgrade head
-        env:
-          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/migration_test
+
+      # Drift check: a fresh autogenerate against the migrated schema must be
+      # empty — any op.* call in the temp revision means uncommitted model changes
+      - name: Check autogenerate produces no changes
+        run: |
+          alembic revision --autogenerate -m "ci-drift-check" --rev-id ci_drift_check
+          drift_file=$(find alembic/versions -name '*ci_drift_check*')
+          if grep -qE '^[[:space:]]*op\.' "$drift_file"; then
+            echo "ERROR: Uncommitted migration detected — models changed without a migration."
+            echo "Run 'alembic revision --autogenerate' locally and commit the result."
+            rm -f "$drift_file"
+            exit 1
+          fi
+          rm -f "$drift_file"  # clean up the temp revision
 
       # Test downgrade (optional — verify rollback works)
       - name: Test downgrade
         run: alembic downgrade -1
-        env:
-          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/migration_test
 ```
 
 ### GitLab CI Pipeline
@@ -721,8 +798,11 @@ variables:
 lint:
   stage: lint
   image: python:3.12-slim
+  before_script:
+    - pip install --user pipx
+    - pipx install ruff
+    - pipx install mypy
   script:
-    - pip install ruff mypy
     - ruff check src/
     - mypy src/
 
@@ -730,9 +810,20 @@ test:
   stage: test
   image: python:3.12-slim
   services:
-    - postgres:16-alpine
-  script:
+    - name: postgres:17-alpine
+      alias: postgres
+  variables:
+    # App connects to the `postgres` service container at host `postgres`
+    # (not `localhost` — the container hostname is the service alias).
+    POSTGRES_USER: testuser
+    POSTGRES_PASSWORD: testpass
+    POSTGRES_DB: testdb
+    DATABASE_URL: postgresql://testuser:testpass@postgres:5432/testdb
+  before_script:
+    - python -m venv .venv
+    - source .venv/bin/activate
     - pip install -e ".[dev]"
+  script:
     - alembic upgrade head
     - pytest --cov=src --cov-report=xml
   artifacts:
@@ -744,14 +835,18 @@ test:
 
 build:
   stage: build
-  image: docker:24
+  image: docker:28
   services:
-    - docker:24-dind
+    - docker:28-dind
   script:
+    # Authenticate BEFORE push — otherwise: "denied: authentication required".
+    # CI_JOB_TOKEN variant: docker login -u gitlab-ci-token -p "$CI_JOB_TOKEN" "$CI_REGISTRY"
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
     - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
-  only:
-    - main
+  # `only`/`except` are deprecated (maintenance mode) — use `rules:`
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
 ```
 
 ## Best Practices
@@ -782,7 +877,7 @@ build:
 
 ## Context7 Integration
 
-When working with CI/CD patterns, verify against current documentation:
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
@@ -791,5 +886,3 @@ When working with CI/CD patterns, verify against current documentation:
 | Terraform | `/websites/developer_hashicorp_terraform` | Provider config, modules |
 | Kubernetes | `/kubernetes/website` | Deployment manifests, HPA |
 | ArgoCD | `/argoproj/argo-cd` | GitOps configuration |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs` to get current examples.

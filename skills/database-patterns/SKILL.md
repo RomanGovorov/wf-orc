@@ -1,6 +1,6 @@
 ---
 name: database-patterns
-description: Database design patterns — normalization, indexing, migrations (Alembic), connection pooling, transactions, partitioning, CQRS, NoSQL. Use when designing schemas, writing queries, configuring pools, or planning migrations.
+description: Database design patterns — connection pooling, async sessions, Alembic migrations, indexing, N+1 prevention, transaction isolation, CQRS, repository pattern, soft delete, bulk operations. Use when designing schemas, writing queries, configuring pools, planning migrations.
 priority: 10
 paths:
   - "**/models*"
@@ -48,9 +48,9 @@ Complete guide to database design and optimization — normalization, indexing, 
 | **Availability** | Every request gets a response | Possible stale reads |
 | **Partition Tolerance** | System works despite network partitions | Mandatory in distributed systems |
 
-- **CP** (Consistency + Partition tolerance) — PostgreSQL, MySQL (single-node)
+- **CP** (Consistency + Partition tolerance) — etcd, ZooKeeper (consensus systems)
 - **AP** (Availability + Partition tolerance) — Cassandra, DynamoDB
-- **CA** (Consistency + Availability) — only possible without partitions (single-node, no replication)
+- **CA** (Consistency + Availability) — no partition scenario: single-node PostgreSQL/MySQL (no replication)
 
 ### ACID Properties
 
@@ -92,7 +92,20 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,  # Don't expire after commit — safe for API responses
 )
 
-# FastAPI dependency with proper cleanup
+# FastAPI dependency — RECOMMENDED commit-on-success pattern: commit after a
+# successful request, rollback on exception (read-only requests commit an empty
+# transaction — negligible cost). Whichever variant you use, commit
+# responsibility must be EXPLICIT: `python-professional` shows the
+# never-committing get_db, where services/endpoints must commit themselves.
+#
+# CAVEAT: FastAPI's default dependency scope is `scope="request"`, which runs
+# the dependency's exit code (the commit below) AFTER the response is sent.
+# For most endpoints this is fine — the commit happens asynchronously and the
+# client already has its response. If you need the commit to complete BEFORE
+# the response is sent (e.g. for audit logging that must be durable), set
+# `Depends(get_db, scope="function")` on the endpoint.
+from collections.abc import AsyncGenerator
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
@@ -105,6 +118,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 # Lifespan — dispose pool on shutdown
 from contextlib import asynccontextmanager
+from fastapi import FastAPI
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -137,7 +151,7 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
-async def get_user_with_orders(db: AsyncSession, user_id: int) -> User:
+async def get_user_with_orders(db: AsyncSession, user_id: int) -> User | None:
     """Session with expire_on_commit=False — attributes remain accessible after commit."""
     stmt = (
         select(User)
@@ -221,6 +235,14 @@ async def run_async_migrations():
 
 def run_migrations_online():
     asyncio.run(run_async_migrations())
+
+# Dispatch — Alembic calls env.py as a script; without this gate neither
+# function runs and `alembic upgrade` / `alembic revision --autogenerate`
+# silently does nothing.
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
 ```
 
 **Branching migrations** (parallel feature branches):
@@ -286,6 +308,10 @@ revision = "005"
 down_revision = "004"
 
 def upgrade():
+    # WARNING: For large tables, adding nullable=False with server_default in one step
+    # rewrites all rows (table lock). Safe pattern: (1) add nullable column with default,
+    # (2) backfill existing rows, (3) ALTER to NOT NULL, (4) drop default.
+
     # 1. Add new column with default
     op.add_column(
         "users",
@@ -318,7 +344,8 @@ def downgrade():
 
 ```python
 # SQLAlchemy — index definitions on models
-from sqlalchemy import Index, text
+from sqlalchemy import Index, text, ForeignKey, String, Numeric, Decimal
+from datetime import datetime
 
 class Order(Base):
     __tablename__ = "orders"
@@ -392,12 +419,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload, joinedload, subqueryload
 
 # ❌ BAD: N+1 problem — 1 query + N queries for orders
+# Under AsyncSession, lazy loading of a relationship raises MissingGreenlet
+# (not "fires a separate query") — async sessions cannot synchronously issue
+# additional queries inside an attribute access. N+1 fires a separate query
+# per user only in sync sessions or via `await session.run_sync(...)` escapes.
+# The fix is the same: eager-load up front.
 async def get_users_bad(db: AsyncSession) -> list[User]:
     stmt = select(User)
     result = await db.execute(stmt)
     users = list(result.scalars().all())
     for user in users:
-        _ = user.orders  # LAZY LOAD — fires a separate query per user!
+        # Sync: lazy-loads user.orders (N extra queries).
+        # Async: raises MissingGreenlet here — the session can't fire a
+        # synchronous lazy load from inside an async coroutine.
+        _ = await db.run_sync(lambda s: user.orders)
     return users
 
 # ✅ GOOD: selectinload — 2 queries (users + all orders in one IN clause)
@@ -455,31 +490,49 @@ engine = create_async_engine(
     isolation_level="REPEATABLE_READ",  # Default for all connections
 )
 
-# Override per-transaction
-from sqlalchemy import event
+# Override per unit of work — documented mechanism: execution_options().
+# A raw "SET TRANSACTION ISOLATION LEVEL ..." via session.execute() only works
+# as the FIRST statement of a transaction; execution_options is applied when
+# the connection is checked out and works for sync and async engines alike.
+serializable_engine = engine.execution_options(isolation_level="SERIALIZABLE")
 
 async def transfer_funds(
-    db: AsyncSession,
+    db: AsyncSession,  # bound to serializable_engine: AsyncSession(serializable_engine)
     from_account: int,
     to_account: int,
     amount: Decimal,
+    *,
+    max_retries: int = 3,
 ):
-    """Transfer with SERIALIZABLE isolation — prevents all anomalies."""
-    # Start explicit transaction with specific isolation level
-    await db.execute(
-        text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-    )
+    """Transfer with SERIALIZABLE isolation — prevents all anomalies.
 
-    # Read current balances (repeatable within this transaction)
-    sender = await db.get(Account, from_account)
-    receiver = await db.get(Account, to_account)
+    SERIALIZABLE transactions may fail with serialization failures
+    (psycopg.errors.SerializationFailure / SQLAlchemy OperationalError) when
+    concurrent transactions touch the same rows. Caller MUST retry with
+    backoff — the business logic is correct on the next attempt.
+    """
+    import asyncio
+    from sqlalchemy.exc import OperationalError
 
-    if sender.balance < amount:
-        raise InsufficientFundsError()
+    for attempt in range(max_retries):
+        try:
+            # Read current balances (repeatable within this transaction)
+            sender = await db.get(Account, from_account)
+            receiver = await db.get(Account, to_account)
 
-    sender.balance -= amount
-    receiver.balance += amount
-    await db.commit()
+            if sender.balance < amount:
+                raise InsufficientFundsError()
+
+            sender.balance -= amount
+            receiver.balance += amount
+            await db.commit()
+            return
+        except OperationalError:
+            await db.rollback()
+            if attempt == max_retries - 1:
+                raise
+            # Exponential backoff: 50ms, 100ms, 200ms
+            await asyncio.sleep(0.05 * (2 ** attempt))
 
 # Isolation levels comparison:
 # | Level             | Dirty Read | Non-repeatable Read | Phantom Read | Performance |
@@ -491,13 +544,17 @@ async def transfer_funds(
 # * PostgreSQL REPEATABLE READ also prevents phantom reads
 
 # ✅ GOOD: Optimistic locking with version column
+from sqlalchemy import Integer
+
 class Account(Base):
     __tablename__ = "accounts"
     id: Mapped[int] = mapped_column(primary_key=True)
     balance: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     version: Mapped[int] = mapped_column(Integer, default=0)
 
-    __mapper_args__ = {"version_id_col": "version"}
+    # version_id_col takes the mapped Column OBJECT — a string raises at
+    # mapper configuration time
+    __mapper_args__ = {"version_id_col": version}
     # SQLAlchemy automatically adds WHERE version = ? to UPDATE statements
     # Raises StaleDataError if version doesn't match → retry the operation
 ```
@@ -508,6 +565,7 @@ class Account(Base):
 
 ```python
 from typing import Protocol, Generic, TypeVar
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 T = TypeVar("T")
@@ -536,7 +594,7 @@ read_engine = create_async_engine(
     "postgresql+asyncpg://user:pass@replica-host/mydb",
     pool_size=30,  # More connections for reads
 )
-ReadSession = async_sessionmaker(read_engine, class_=AsyncSession)
+ReadSession = async_sessionmaker(read_engine, class_=AsyncSession, expire_on_commit=False)
 
 # Command handler
 class OrderCommandHandler:
@@ -558,7 +616,7 @@ class OrderQueryHandler:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_dashboard(self, user_id: int) -> dict:
+    async def get_dashboard(self, user_id: int) -> list[dict]:
         """Denormalized read — returns everything the dashboard needs."""
         result = await self.session.execute(text("""
             SELECT
@@ -577,16 +635,23 @@ class OrderQueryHandler:
 # FastAPI dependencies
 async def get_write_db():
     async with WriteSession() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 async def get_read_db():
     async with ReadSession() as session:
         yield session
 
-@router.post("/orders")
+@router.post("/orders", response_model=OrderRead)
 async def create_order(data: OrderCreate, db=Depends(get_write_db)):
     handler = OrderCommandHandler(db)
-    return await handler.create_order(data)
+    order = await handler.create_order(data)
+    # Dependency (get_write_db) auto-commits on success — no explicit commit needed.
+    return order
 
 @router.get("/orders/dashboard")
 async def order_dashboard(user=Depends(get_current_user), db=Depends(get_read_db)):
@@ -686,11 +751,26 @@ class UserRepository(SQLAlchemyRepository[User]):
         return result.scalars().all(), total
 
 
+# Response schemas — endpoints return Pydantic models, never raw ORM objects
+from pydantic import BaseModel, ConfigDict
+
+class UserRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    name: str
+
+class UserPage(BaseModel):
+    items: list[UserRead]
+    total: int
+    page: int
+
 # FastAPI dependency injection
 def get_user_repository(db: AsyncSession = Depends(get_db)) -> UserRepository:
     return UserRepository(db)
 
-@router.get("/users")
+@router.get("/users", response_model=UserPage)
 async def list_users(
     search: str | None = None,
     page: int = 1,
@@ -701,6 +781,7 @@ async def list_users(
     else:
         users = await repo.list(offset=(page - 1) * 20)
         total = await repo.count()
+    # ORM objects are validated/serialized through UserPage → UserRead
     return {"items": users, "total": total, "page": page}
 ```
 
@@ -709,8 +790,8 @@ async def list_users(
 ### 9. Soft Delete Pattern
 
 ```python
-from sqlalchemy import Boolean, DateTime, select, func
-from sqlalchemy.orm import Mapped, mapped_column, Query
+from sqlalchemy import Boolean, DateTime, select, func, text
+from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone
 
 class SoftDeleteMixin:
@@ -720,15 +801,30 @@ class SoftDeleteMixin:
         Boolean, default=False, index=True,
     )
     deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True, default=None,
+        DateTime(timezone=True), nullable=True, default=None,  # tz-aware datetimes
     )
 
 
-class User(Base, SoftDeleteMixin, TimestampMixin):
+# TimestampMixin — define created_at/updated_at columns as needed
+class User(Base, SoftDeleteMixin):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
-    email: Mapped[str] = mapped_column(String(255), unique=True)
+    # NOTE: cannot use `unique=True` here — a soft-deleted row would still
+    # occupy the unique slot, preventing a new user from claiming the same
+    # email. Use a partial unique index (see __table_args__) instead.
+    email: Mapped[str] = mapped_column(String(255), index=True)
+
+    __table_args__ = (
+        # Partial unique index — only enforced among non-deleted rows.
+        # Soft-deleted rows release the email slot for reuse.
+        Index(
+            "uq_users_email_active",
+            "email",
+            unique=True,
+            postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
 
 # ✅ GOOD: Default filter excludes soft-deleted rows
@@ -787,14 +883,14 @@ class SoftDeleteRepository(SQLAlchemyRepository[T]):
 ### 10. Bulk Operations
 
 ```python
-from sqlalchemy import insert, update, text
+from sqlalchemy import insert, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # ✅ GOOD: Batch INSERT — single round-trip
 async def bulk_insert_orders(db: AsyncSession, orders: list[dict]):
     """Insert multiple rows in one query."""
     await db.execute(insert(Order), orders)
-    # Auto-commits at session boundary
+    await db.commit()  # sessions NEVER auto-commit — commit explicitly
 
 # ✅ GOOD: Upsert (INSERT ... ON CONFLICT UPDATE) — PostgreSQL
 async def upsert_products(db: AsyncSession, products: list[dict]):
@@ -835,15 +931,28 @@ async def chunked_insert(
         await db.commit()  # Commit per chunk to release locks
 
 # ✅ GOOD: COPY for massive data loads (PostgreSQL)
-async def copy_load_csv(db: AsyncSession, table_name: str, csv_path: str):
-    """Use PostgreSQL COPY for fastest bulk loading."""
+# Why NOT `text(f"COPY {table} FROM :path ...")`:
+#   1) f-string SQL concatenation violates the parameterized-query rule below
+#   2) COPY is a utility statement — bind parameters don't work for its path
+#   3) server-side COPY FROM '<path>' reads a file on the DB SERVER, not the app host
+async def copy_load_records(db: AsyncSession, table_name: str, records: list[tuple]):
+    """Bulk-load rows with binary COPY, streaming records from the app host."""
+    # COPY targets cannot be bind parameters — WHITELIST identifiers explicitly
+    allowed_tables = {"orders", "products", "events"}
+    if table_name not in allowed_tables:
+        raise ValueError(f"Table not allowed for COPY load: {table_name}")
+
     conn = await db.connection()
-    await conn.run_sync(
-        lambda sync_conn: sync_conn.execute(
-            text(f"COPY {table_name} FROM :path WITH (FORMAT csv, HEADER true)"),
-            {"path": csv_path},
-        )
-    )
+    raw = await conn.get_raw_connection()
+    asyncpg_conn = raw.driver_connection  # the real asyncpg connection
+    await asyncpg_conn.copy_records_to_table(table_name, records=records)
+
+# CSV files: stream a LOCAL file via STDIN with psycopg's copy_expert,
+# again with a whitelisted (never unvalidated-interpolated) table identifier:
+#   with open(csv_path, "rb") as f:
+#       cur.copy_expert(
+#           f"COPY {table_name} FROM STDIN WITH (FORMAT csv, HEADER true)", f
+#       )
 ```
 
 ---
@@ -869,7 +978,7 @@ async def copy_load_csv(db: AsyncSession, table_name: str, csv_path: str):
 
 | Mistake | Why It's Bad | Fix |
 |---------|-------------|-----|
-| `session.query()` style | Deprecated 1.x API — removed in future | Use `select()` 2.0 style |
+| `session.query()` style | Legacy 1.x API — supported but superseded by `select()` 2.0 | Use `select()` 2.0 style |
 | No connection pool config | DB overload on spike | Set `pool_size` + `max_overflow` |
 | Missing `expire_on_commit=False` | `DetachedInstanceError` after commit | Set in `async_sessionmaker` |
 | N+1 queries (lazy loading in loops) | 1000 queries for 1000 rows | Use `selectinload` / `joinedload` |
@@ -886,15 +995,13 @@ async def copy_load_csv(db: AsyncSession, table_name: str, csv_path: str):
 
 ## Context7 Integration
 
-When working with database patterns, verify against current documentation:
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
 | SQLAlchemy | `/websites/sqlalchemy_en_20` | ORM patterns, session config, engine setup |
 | Alembic | `/websites/alembic_sqlalchemy` | Migration patterns, autogenerate config |
 | PostgreSQL | (query "PostgreSQL") | Index types, JSONB, partitioning |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs` to get current examples.
 
 **When to query:**
 - Before implementing a new pattern — verify the API hasn't changed

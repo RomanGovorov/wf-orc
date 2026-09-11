@@ -4,7 +4,7 @@ description: Full project workflow — from requirements to deployment
 
 # wf-orc — Full Project Workflow
 
-**START NOW:** Launch the `business-analyst` agent using the `agent` tool with the task below. Then follow the workflow instructions to completion.
+**START NOW:** Launch the `business-analyst` agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with the task below. Then follow the workflow instructions to completion.
 
 ## User's Task
 
@@ -22,7 +22,7 @@ User Request
   → architecture-planner (preliminary architecture, cost estimation)
   → project-manager (backlog, tasks)
   → architecture-planner (detailed architecture, ADRs)
-  → [optional audits (parallel): security | ui-ux | data]
+  → [optional audits: security | ui-ux | data]
   → architecture-planner (aggregates audit results)
   → code-implementer (implementation)
   → code-reviewer (review)
@@ -51,7 +51,7 @@ User Request
 
 **IMMEDIATELY** launch the first agent:
 ```
-agent(subagent_type="business-analyst", prompt="<user's task from above>")
+Launch the first agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with `subagent_type="business-analyst"` and the user's task as prompt.
 ```
 
 The business-analyst will:
@@ -66,35 +66,36 @@ After business-analyst completes, launch architecture-planner for preliminary ar
 **Why this step is not in workflow.yaml:** This is an ad-hoc preparatory step specific to the Full workflow. It creates initial architecture documents that project-manager needs for backlog creation. The formal architecture-planner run (Step 5) is modeled in workflow.yaml and handles detailed architecture with ADRs.
 
 ```
-agent(subagent_type="architecture-planner", prompt="Create preliminary architecture based on TZ at docs/requirements/TZ-*.md and context at docs/context/")
+Launch architecture-planner with `subagent_type="architecture-planner"` and prompt to create preliminary architecture based on TZ at docs/requirements/TZ-*.md and context at docs/context/
 ```
 
 ### 4. Launch Project Manager
 
 After preliminary architecture, launch project-manager:
 ```
-agent(subagent_type="project-manager", prompt="Create backlog and sprint plan based on TZ at docs/requirements/TZ-*.md and architecture at docs/architecture/")
+Launch project-manager with `subagent_type="project-manager"` and prompt to create backlog and sprint plan based on TZ at docs/requirements/TZ-*.md and architecture at docs/architecture/
 ```
 
-### 5. Continue with Full Workflow
+### 5. Continue with Full Workflow (workflow.yaml tracked)
 
-Follow the standard workflow from `/wf-orc:run`:
-- architecture-planner (detailed architecture)
+From this point, follow the standard workflow from `/wf-orc:run` — all transitions are tracked in `workflow.yaml`:
+
+- architecture-planner (detailed architecture with ADRs — this is the FORMAL run, separate from the preliminary step 3)
 - Optional audits (security, UI-UX, data)
-- **code-implementer (per task — see §3a in run.md)**
+- code-implementer — **IMPORTANT: launch once per TSK, not once per sprint** (see §3a "Task Granularity" in `/wf-orc:run`)
 - code-reviewer
 - Parallel comprehensive-test-engineer + performance-analyst
-
-**IMPORTANT:** Launch code-implementer once per TSK, not once per sprint. See §3a "Task Granularity" in `/wf-orc:run`.
 - devops-infrastructure-engineer
 - tech-docs-writer
 - project-manager (completion)
+
+> **State tracking note:** Steps 2-4 above (BA → preliminary architect → PM) are ad-hoc and NOT tracked in `workflow.yaml`. Starting from Step 5, all transitions follow `workflow.yaml` conditions and iteration counters apply normally.
 
 See `/wf-orc:run` for detailed transition table and condition evaluation.
 
 ### 6. Workflow Completion
 
-The workflow completes when `tech-docs-writer` → `project-manager` (T70). Mark all tasks DONE.
+The workflow completes when `project-manager` returns `workflow_complete: true` (after T70 and the PM's documentation review — T70_REV loops are possible). Then mark all tasks DONE.
 
 ## Key Differences from /wf-orc:run
 
@@ -108,12 +109,13 @@ The workflow completes when `tech-docs-writer` → `project-manager` (T70). Mark
 ## Key Rules
 
 1. **Read `workflow.yaml`** for the full transition table and conditions
-2. **Launch agents** via `agent` tool with `subagent_type` = agent name
+2. **Launch agents** via the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with `subagent_type` = agent name
 3. **Evaluate conditions** from agent's JSON result to determine next transition
 4. **Parallel branches**: launch comprehensive-test-engineer + performance-analyst simultaneously; wait for BOTH before devops-infrastructure-engineer
 5. **Forced progress**: ALL agents return `status: "pass"`. No `"fail"` — document issues in content
-6. **Phase detection**: Phase 1 audits (before implementation) vs Phase 2 verification (after fixes) — determined by incoming transition
-7. **User questions**: Agents may ask questions via `ask_user_question` — relay to user
+6. **Blocked**: `blocked: true` → re-launch the same agent once with error context, then force forward (BLOCKED-RESULT PROTOCOL in workflow.yaml)
+7. **Phase detection**: Phase 1 audits (before implementation) vs Phase 2 verification (after fixes) — determined by incoming transition
+8. **User questions**: sub-agents CANNOT ask the user directly on either platform. Relay `needs_user_input: true` results: ask the user from the main session (`AskUserQuestion` in Claude Code, `ask_user_question` in Qwen Code), then re-launch the agent with answers
 
 ## Condition Evaluation Map
 

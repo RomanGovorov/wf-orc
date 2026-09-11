@@ -3,6 +3,7 @@ name: python-professional
 description: Professional Python — code style, FastAPI, MCP, Alembic, Jinja, SQLAlchemy 2.0. Use when writing, reviewing, and refactoring Python code.
 priority: 10
 paths:
+  - "**/*.py"
   - "**/*.pyi"
   - "**/src/**/*.py"
   - "**/lib/**/*.py"
@@ -78,7 +79,8 @@ myproject/
 │       │       ├── router.py
 │       │       └── endpoints/
 │       │           ├── users.py
-│       │           └── auth.py
+│       │           ├── auth.py
+│       │           └── orders.py
 │       ├── core/
 │       │   ├── security.py
 │       │   └── db.py
@@ -108,7 +110,7 @@ myproject/
 ```toml
 # pyproject.toml
 [tool.ruff]
-target-version = "py312"
+target-version = "py312"  # floor — bump to "py313"/"py314" as your minimum runtime advances
 line-length = 100
 src = ["src"]
 
@@ -121,8 +123,10 @@ select = [
     "UP",   # pyupgrade
     "B",    # flake8-bugbear
     "SIM",  # flake8-simplify
+    "S",    # flake8-bandit (security)
+    "ARG",  # flake8-unused-arguments
     "RUF",  # ruff-specific
-    "TCH",  # flake8-type-checking
+    "TC",   # flake8-type-checking ("TCH" prefix is deprecated — use "TC")
     "PTH",  # flake8-use-pathlib
     "ERA",  # eradicate (dead code)
 ]
@@ -131,10 +135,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "ARG"]  # allow assert, unused args
+"tests/**" = ["S101", "ARG"]  # allow assert, unused args (recursive — covers tests/test_api/ etc.)
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.12"  # floor; keep in sync with ruff target-version
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -147,10 +151,12 @@ module = ["tests.*"]
 disallow_untyped_defs = false
 ```
 
+Ruff/mypy pin Python 3.12 as the *floor*, not the current release — Python 3.13/3.14 are out; bump `target-version` and `python_version` together when your minimum supported runtime advances.
+
 ### Type Hints Patterns
 
 ```python
-from typing import Any, Optional
+from typing import Any
 
 # ✅ GOOD
 def get_user(user_id: int) -> User | None: ...
@@ -236,25 +242,50 @@ router.include_router(orders.router, prefix="/orders", tags=["orders"])
 ```python
 # src/myapp/main.py — Application factory
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+
+from myapp.core.db import db_engine  # async engine, created in core/db.py
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown events."""
-    # Startup
-    await db_engine.connect()
+    # Startup — verify DB is reachable; connection returns to the pool
+    async with db_engine.connect():
+        pass
     yield
-    # Shutdown
+    # Shutdown — dispose pooled connections
     await db_engine.dispose()
+
+
+def create_app() -> FastAPI:
+    """Application factory — build a fully configured app instance."""
+    app = FastAPI(title="MyApp", lifespan=lifespan)
+
+    from .api.router import router  # deferred import — avoids import cycles
+
+    app.include_router(router)
+    return app
+
+
+app = create_app()
 ```
 
 ### Dependency Injection
 
 ```python
 # src/myapp/api/deps.py
+# (defined elsewhere: `async_session` — from core/db.py; `oauth2_scheme` —
+# from core/security.py; `User` — from models/user.py; `verify_token` — from
+# core/security.py / secure-coding-patterns skill; `router` — from api/router.py)
 from fastapi import Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Database session
+# NOTE: this variant NEVER commits — commit responsibility must be explicit in
+# services/endpoints. RECOMMENDED: commit-on-success inside the dependency
+# (commit after yield, rollback on exception) — see `database-patterns` skill.
 async def get_db():
     """Provide database session — auto-cleanup via async context manager."""
     async with async_session() as session:
@@ -262,19 +293,28 @@ async def get_db():
 
 # Auth dependency
 async def get_current_user(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     token: str = Depends(oauth2_scheme),
 ) -> User:
-    """Verify JWT token and return current user."""
-    payload = decode_token(token)
-    user = await db.get(User, payload.sub)
+    """Verify JWT token and return current user.
+
+    Note: `sub` is stored as str(user.id) in the JWT (secure-coding pattern),
+    but User.id is Mapped[int]. Convert before the lookup; on asyncpg the bind
+    type must match the column type or you get InterfaceError.
+    """
+    payload = verify_token(token)  # from secure-coding-patterns; returns claims dict
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid user")
     return user
 
 # Role-based auth
 async def require_admin(
-    current_user = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ) -> User:
     """Require admin role."""
     if current_user.role != "admin":
@@ -294,26 +334,51 @@ async def delete_user(
 ### Background Tasks
 
 ```python
+# (defined elsewhere: `email_service` — from services/email_service.py;
+# `user_service` — from services/user_service.py; `UserCreate` — from
+# schemas/user.py; `Depends`, `get_db` — from api/deps.py; `router` — from
+# api/v1/router.py)
 from fastapi import BackgroundTasks
+from pydantic import BaseModel, ConfigDict
 
-async def send_welcome_email(user: User):
-    """Background task — send email asynchronously."""
-    await email_service.send(user.email, "Welcome!", template="welcome")
+class UserRead(BaseModel):
+    """API response schema — endpoints return schemas, never raw ORM objects."""
+    model_config = ConfigDict(from_attributes=True)
 
-@router.post("/users")
+    id: int
+    email: str
+    name: str
+
+async def send_welcome_email(email: str):
+    """Background task — send email asynchronously.
+
+    NOTE: receives a plain string, NOT a User ORM object. Background tasks
+    run after the request's DB session closes — passing an ORM object would
+    raise DetachedInstanceError on any lazy attribute access. Always pass
+    plain values (user.id, user.email) extracted before the task is queued.
+    """
+    await email_service.send(email, "Welcome!", template="welcome")
+
+@router.post("/users", response_model=UserRead)
 async def create_user(
     data: UserCreate,
     background_tasks: BackgroundTasks,
     db = Depends(get_db),
 ):
     user = await user_service.create(db, data)
-    background_tasks.add_task(send_welcome_email, user)
-    return user
+    # Pass plain values — the session closes before the background task runs,
+    # so ORM objects would be detached and lazy loads would fail.
+    background_tasks.add_task(send_welcome_email, user.email)
+    return user  # serialized through UserRead (from_attributes=True)
 ```
 
 ### Middleware
 
 ```python
+# (defined elsewhere: `app` — FastAPI app instance from main.py; `time` — import time)
+from fastapi import Request
+import time
+
 @app.middleware("http")
 async def add_timing_header(request: Request, call_next):
     start = time.perf_counter()
@@ -354,7 +419,6 @@ class TimestampMixin:
 # src/myapp/models/user.py
 from sqlalchemy import String, Boolean, Text
 from sqlalchemy.orm import mapped_column, Mapped, relationship
-from typing import Optional
 
 class User(Base, TimestampMixin):
     __tablename__ = "users"
@@ -364,7 +428,7 @@ class User(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     orders: Mapped[list["Order"]] = relationship(
@@ -372,7 +436,7 @@ class User(Base, TimestampMixin):
         back_populates="user",
         cascade="all, delete-orphan"
     )
-    profile: Mapped[Optional["UserProfile"]] = relationship(
+    profile: Mapped["UserProfile" | None] = relationship(
         "UserProfile",
         back_populates="user",
         uselist=False
@@ -390,7 +454,7 @@ async def get_users(
     db: AsyncSession,
     page: int = 1,
     page_size: int = 20,
-    search: Optional[str] = None,
+    search: str | None = None,
 ) -> tuple[list[User], int]:
     """Get paginated users with optional search."""
     # Base query
@@ -443,13 +507,15 @@ def upgrade():
         "users",
         sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
         sa.Column("name", sa.String(100), nullable=False),
-        sa.Column("email", sa.String(255), nullable=False, unique=True),
+        sa.Column("email", sa.String(255), nullable=False),
         sa.Column("hashed_password", sa.String(255), nullable=False),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.true()),
-        sa.Column("created_at", sa.DateTime(), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now(),
                   onupdate=sa.func.now()),
     )
+    # Unique enforcement lives in ONE place: this unique index — matches the
+    # model's `mapped_column(String(255), unique=True, index=True)`
     op.create_index("ix_users_email", "users", ["email"], unique=True)
 
 def downgrade():
@@ -573,14 +639,31 @@ env.filters["truncate_words"] = truncate_words
 
 ### MCP Server Pattern
 
+> **API level**: for production servers prefer the high-level API — `FastMCP` (`from mcp.server.fastmcp import FastMCP`) in MCP Python SDK 1.x, renamed to `MCPServer` (`from mcp.server import MCPServer`) in SDK 2.x. It derives input schemas from type hints and converts a raised `ToolError` into a structured error result. The **low-level** `Server` example below (1.x decorator style) is kept to show the protocol layer explicitly.
+
 ```python
-# mcp_server.py — Model Context Protocol server
-from mcp.server import Server
-from mcp.types import Resource, Tool, TextContent
+# mcp_server.py — Model Context Protocol server (LOW-LEVEL API)
+import json
+
 import httpx
+from mcp.server.lowlevel import Server
+from mcp.types import CallToolResult, Resource, TextContent, Tool
 
 # Server instance
 server = Server("weather-mcp-server")
+
+# ONE helper shared by resource and tool handlers
+DEFAULT_LOCATION = "Moscow"
+
+async def fetch_weather(location: str, units: str = "metric") -> dict:
+    """Fetch current weather from the external API."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://api.weather.example/v1/current",
+            params={"q": location, "units": units},
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 # Resources — data access
 @server.list_resources()
@@ -597,9 +680,10 @@ async def list_resources():
 @server.read_resource()
 async def read_resource(uri):
     if uri == "weather://current":
-        # Read weather data
-        weather = await get_weather(location)
+        weather = await fetch_weather(DEFAULT_LOCATION)
         return json.dumps(weather)
+    # Raising for an unknown resource is correct — it surfaces as a
+    # protocol-level (JSON-RPC) error. Tools return structured errors instead.
     raise ValueError(f"Unknown resource: {uri}")
 
 # Tools — actions
@@ -628,37 +712,54 @@ async def list_tools():
     ]
 
 @server.call_tool()
-async def call_tool(name: str, arguments: dict):
-    if name == "get_weather":
-        location = arguments["location"]
-        units = arguments.get("units", "metric")
-        weather = await fetch_weather(location, units)
-        return [TextContent(
-            type="text",
-            text=json.dumps(weather, indent=2)
-        )]
-    raise ValueError(f"Unknown tool: {name}")
+async def call_tool(name: str, arguments: dict) -> CallToolResult:
+    if name != "get_weather":
+        # Structured error result the model can read — don't raise raw
+        # exceptions from tool handlers (they surface as opaque protocol errors)
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Unknown tool: {name}")],
+            isError=True,
+        )
+    try:
+        weather = await fetch_weather(
+            arguments["location"], arguments.get("units", "metric")
+        )
+    except httpx.HTTPError as exc:
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Weather lookup failed: {exc}")],
+            isError=True,
+        )
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(weather, indent=2))]
+    )
 ```
 
 ### MCP Client Pattern
 
 ```python
 # client.py — MCP client
-from mcp.client import ClientSession
+# ClientSession is re-exported at the top level (`from mcp import ClientSession`);
+# the module path is `mcp.client.session` — `from mcp.client import ClientSession`
+# is NOT valid.
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
-async with ClientSession(transport) as session:
-    # Initialize
-    await session.initialize()
+async def main():
+    server_params = StdioServerParameters(command="python", args=["mcp_server.py"])
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            # Initialize
+            await session.initialize()
 
-    # List available tools
-    tools = await session.list_tools()
+            # List available tools
+            tools = await session.list_tools()
 
-    # Call a tool
-    result = await session.call_tool("get_weather", {
-        "location": "Moscow",
-        "units": "metric"
-    })
-    print(result)
+            # Call a tool
+            result = await session.call_tool("get_weather", {
+                "location": "Moscow",
+                "units": "metric"
+            })
+            print(result)
 ```
 
 ### Best Practices
@@ -667,7 +768,7 @@ async with ClientSession(transport) as session:
 - **Descriptive names** — `get_weather` not `gw`
 - **Rich descriptions** — describe what each tool does
 - **Input schemas** — validate at the protocol level
-- **Error handling** — return structured errors, don't raise
+- **Error handling** — tool failures return structured error results (`isError=True`) the model can read; raising is for protocol-level errors (e.g. unknown resource)
 - **Transport** — stdio for CLI, HTTP for web
 
 ---
@@ -714,7 +815,7 @@ class UserCreate(BaseModel):
 
 ### Protocol and TypedDict
 ```python
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import NotRequired, Protocol, TypedDict, runtime_checkable
 
 # Protocol — structural subtyping (duck typing with type safety)
 @runtime_checkable
@@ -728,7 +829,12 @@ class PostgresUserRepo:
     async def find_by_id(self, id: int) -> dict:
         return await self.pool.fetchrow("SELECT * FROM users WHERE id=$1", id)
     async def create(self, data: dict) -> dict:
-        return await self.pool.fetchrow("INSERT INTO users ...", **data)
+        # asyncpg takes POSITIONAL args for $n placeholders — no **kwargs
+        return await self.pool.fetchrow(
+            "INSERT INTO users(name, email) VALUES($1, $2) RETURNING *",
+            data["name"],
+            data["email"],
+        )
     async def delete(self, id: int) -> None:
         await self.pool.execute("DELETE FROM users WHERE id=$1", id)
 
@@ -741,11 +847,15 @@ class APIError(TypedDict):
     message: str
     details: dict[str, list[str]]
 
-class UserResponse(TypedDict, total=False):
-    id: int           # always present
-    email: str        # always present
-    name: str         # total=False makes all optional
-    avatar_url: str   # optional
+# Optional keys — PEP 655 idiom (Python 3.11+): NotRequired[]/Required[] mark
+# keys individually, instead of total=False making EVERY key optional.
+# (Alternative idiom: two TypedDicts with inheritance — a total=False base
+# holding optional keys, and a derived default-total dict of required ones.)
+class UserResponse(TypedDict):
+    id: int                       # required (default)
+    email: str                    # required
+    name: str                     # required
+    avatar_url: NotRequired[str]  # optional
 ```
 
 ## Best Practices
@@ -778,14 +888,12 @@ class UserResponse(TypedDict, total=False):
 
 ## Context7 Integration
 
-When working with Python patterns, verify against current documentation:
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
-| Python | (query "Python 3.12") | Language features, stdlib updates |
+| Python | (query "Python 3.13") | Language features, stdlib updates |
 | FastAPI | `/websites/fastapi_tiangolo` | Dependencies, middleware, routing |
 | SQLAlchemy | `/websites/sqlalchemy_en_20` | ORM patterns, session config |
 | Alembic | `/websites/alembic_sqlalchemy` | Migration patterns |
 | Pydantic | `/pydantic/pydantic` | Validation, model config |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs` to get current examples before writing code.

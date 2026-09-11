@@ -4,7 +4,7 @@ description: Run multi-agent development workflow (bugfix or task with existing 
 
 # wf-orc — Standard Workflow
 
-**START NOW:** Launch the `project-manager` agent using the `agent` tool with the task below. Then follow the workflow instructions to completion.
+**START NOW:** Launch the `project-manager` agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with the task below. Then follow the workflow instructions to completion.
 
 ## User's Task
 
@@ -38,10 +38,11 @@ You are the **workflow orchestrator**. You manage a multi-agent development pipe
 
 ### 2. Start the Workflow
 
-**IMMEDIATELY** launch the first agent:
-```
-agent(subagent_type="project-manager", prompt="<user's task from above>")
-```
+**IMMEDIATELY** launch the first agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with `subagent_type="project-manager"` and the user's task as prompt.
+
+{{INCLUDE:fragments/phase1_aggregation.md}}
+
+---
 
 ### 3. Evaluate Transitions
 
@@ -50,21 +51,20 @@ After each agent completes, it returns a JSON result. Use this to determine the 
 1. Parse the agent's JSON result (`status`, `artifacts`, flags)
 2. Find ALL transitions where `from` = current agent
 3. Evaluate conditions using the **Condition Evaluation Map** below
-4. Launch the next agent via `agent` tool
+4. Launch the next agent via the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code)
 5. If multiple transitions match (`parallel_start`), launch ALL of them simultaneously
+
+{{INCLUDE:fragments/artifact_validation.md}}
 
 ### 3a. Task Granularity for code-implementer
 
 **CRITICAL:** When transitioning to `code-implementer` (T13 or any fix transition), launch it **per task**, not per sprint.
 
-**Why:** code-implementer has `maxTurns: 100`. A sprint with 10+ tasks can exceed this limit, causing the agent to terminate mid-implementation (MAX_TURNS error). This was observed in 4 agents across 3 sessions.
+**Why:** code-implementer has `maxTurns: 100`. A sprint with 10+ tasks can exceed this limit, causing the agent to terminate mid-implementation (MAX_TURNS error).
 
 **How:**
-1. After PM returns `backlog_approved: true`, extract the task list from `sprint_backlog` (array of TSK objects)
-2. For each task in the sprint, launch a **separate** code-implementer instance:
-   ```
-   agent(subagent_type="code-implementer", prompt="Implement TSK-001: <task description>...")
-   ```
+1. After PM returns `backlog_approved: true`, extract the task list from the PM's result — canonical field is `tasks` (array of TSK objects); if absent, fall back to task files in `tasks/active/`
+2. For each task in the sprint, launch a **separate** code-implementer instance with `subagent_type="code-implementer"` and the task description as prompt
 3. Wait for each code-implementer to complete before launching the next
 4. After ALL tasks are implemented, proceed to code-reviewer (T34)
 
@@ -74,30 +74,45 @@ After each agent completes, it returns a JSON result. Use this to determine the 
 
 ### 4. Handle Parallel Branches
 
-After code-reviewer passes, launch BOTH simultaneously:
-```
-agent(subagent_type="comprehensive-test-engineer", ...)
-agent(subagent_type="performance-analyst", ...)
-```
+After code-reviewer passes, launch BOTH simultaneously using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code):
+- `subagent_type="comprehensive-test-engineer"` with test artifacts as prompt
+- `subagent_type="performance-analyst"` with performance artifacts as prompt
 
 **Join rule:** `devops-infrastructure-engineer` starts ONLY when BOTH branches complete (PASS or iteration ≥ max).
 
+{{INCLUDE:fragments/parallel_execution.md}}
+
 ### 5. Continue Until Completion
 
-Workflow ends when `tech-docs-writer` → `project-manager` (T70). Mark all tasks DONE.
+The workflow ends when `project-manager` returns `workflow_complete: true` (after T70 and the PM's documentation review — T70_REV loops are possible). Then mark all tasks DONE.
+
+---
+
+{{INCLUDE:fragments/glossary.md}}
 
 ---
 
 {{GENERATED:condition_evaluation_map}}
+
+> **Note:** BA-transitions (`T_BA_EXIT`, `T_BA_RESEARCH`) are deliberately excluded from this map — they apply only to the `/wf-orc:full` and `/wf-orc:research` entry flows and are documented in `workflow.yaml`.
+
+---
+
+{{INCLUDE:fragments/derived_conditions.md}}
+
+---
+
+{{INCLUDE:fragments/code_reviewer_context.md}}
 
 ---
 
 ## Iteration Counter Rules
 
 - Each counter tracks fix cycles for a specific agent/domain
-- Increment the counter EACH time the agent re-runs for fixes
-- When counter ≥ 3: **force forward progress** — document unresolved issues in the agent's output, continue workflow
+- Increment the counter each time a **loop transition fires** (once per fix cycle, regardless of per-task launches)
+- When counter ≥ max (see `iteration_counters` in workflow.yaml): **force forward progress** — document unresolved issues in the agent's output, continue workflow
 - Counters are independent — code review counter doesn't affect test counter
+- Counters also **RESET** when the workflow advances past the loop they guard — currently: T45a/T45b firing resets `code_review_iteration`, `test_fix_review_iteration`, `perf_fix_review_iteration` to 0 (strict order: evaluate → fire → reset → launch). See `counter_reset_rules` in workflow.yaml.
 
 {{GENERATED:counter_ownership_table}}
 

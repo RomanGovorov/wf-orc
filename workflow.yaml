@@ -1,11 +1,12 @@
 # Agent Workflow DSL - Single Source of Truth
-# Corrected version: aggregate audit handoff, routed re-review loops, independent counters.
+version: "0.6.0"
 #
 # Conventions:
 # - Forced-pass: when iteration >= max (3), the reviewing agent MUST pass
 #   regardless of remaining issues. Reviewing agents: code-reviewer,
 #   security-auditor, ui-ux-accessibility-specialist, data-engineering-architect,
-#   tech-docs-writer. Unresolved issues are documented in the output report.
+#   comprehensive-test-engineer, performance-analyst, tech-docs-writer.
+#   Unresolved issues are documented in the output report.
 # - Phase context: Phase 1 transitions (T23a/b/c) have phase: initial_audit_collect.
 #   Phase 2 transitions (T_SEC_VERIFY/PASS, T_UI_VERIFY/PASS, T_DATA_VERIFY/PASS)
 #   have phase: verification explicitly. The orchestrator reads this field.
@@ -27,12 +28,17 @@
 # ┌─────────────────────────────┬──────────────────────────────┬────────────────────────────────────┐
 # │ Current Agent               │ Transition                   │ Condition = TRUE when              │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ business-analyst            │ T_BA_EXIT → project-manager  │ task_type = "full"                 │
-# │ business-analyst            │ T_BA_RESEARCH → arch-planner │ task_type = "research"             │
+# │ business-analyst            │ T_BA_EXIT → project-manager  │ task_type = "full" (REQUIRED in    │
+# │                             │                              │ every BA result — see protocol P2) │
+# │ business-analyst            │ T_BA_RESEARCH → arch-planner │ task_type = "research" (P2)        │
+# │                             │                              │ NOTE: needs_user_input=true →      │
+# │                             │                              │ apply P1 relay BEFORE routing      │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ project-manager             │ T01 → architecture-planner   │ backlog_approved                    │
-# │ project-manager             │ T70_REV → tech-docs-writer   │ documentation_needs_revision│
-# │                             │                              │ AND documentation_iteration < 3    │
+# │ project-manager             │ T70_REV → tech-docs-writer   │ documentation_needs_revision AND   │
+# │                             │                              │ documentation_iteration < 3         │
+# │ project-manager             │ T_PM_COMPLETE → _terminal    │ documentation_complete OR          │
+# │                             │                              │ documentation_iteration >= 3        │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ architecture-planner        │ T12a → security-auditor      │ architecture doc mentions security │
 # │                             │                              │ requirements AND not all audits    │
@@ -43,16 +49,19 @@
 # │                             │                                       │ pipeline needs AND not all audits  │
 # │                             │                                       │ returned yet                       │
 # │ architecture-planner        │ T13 → code-implementer       │ all audits returned (or none       │
-# │                             │                              │ needed) — i.e. you have collected  │
-# │                             │                              │ all Phase 1 results.               │
-# │                             │                              │ NOTE: if data went to devops       │
-# │                             │                              │ (deployment_only=true), treat data │
-# │                             │                              │ audit as complete for T13 purposes │
+# │                             │                              │ needed) AND NOT deployment_only    │
+# │ architecture-planner        │ T_AGG_TO_DEVOPS → devops-infrastructure-engineer │ deployment_only │
+# │                             │                              │ AND all_audits_complete            │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ security-auditor (Phase 1)  │ T23a → architecture-planner  │ always (any result) — collect audit│
-# │ ui-ux-accessibility-specialist (Phase 1)  │ T23b → architecture-planner  │ always (any result) — collect audit│
-# │ data-engineering-architect (Phase 1)│ T23c → architecture-planner  │ always (any result, except deployment_only) — collect audit│
-# │                             │                              │ NOTE: if deployment_only=true, use T_DATA_TO_DEVOPS instead (skip to devops)
+# │ security-auditor (Phase 1)  │ T23a → architecture-planner  │ any Phase-1 completion result      │
+# │                             │                              │ (*_with_findings OR *_no_findings); │
+# │                             │                              │ blocked handled by P3 catch-all     │
+# │ ui-ux-accessibility-specialist (Phase 1)  │ T23b → architecture-planner  │ any Phase-1 completion result      │
+# │                             │                              │ (*_with_findings OR *_no_findings); │
+# │                             │                              │ blocked handled by P3 catch-all     │
+# │ data-engineering-architect (Phase 1)│ T23c → architecture-planner  │ always (any Phase 1      │
+# │                             │                              │ result, INCLUDING deployment_only) │
+# │                             │                              │ — collect audit                    │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ security-auditor (Phase 2)  │ T_SEC_VERIFY → code-implementer     │ findings NOT resolved AND iter < 3 │
 # │                             │ T_SEC_PASS → code-reviewer   │ security_verification_pass OR iter >= 3 │
@@ -60,7 +69,6 @@
 # │                             │ T_UI_PASS → code-reviewer    │ ui_verification_pass OR iter >= 3  │
 # │ data-engineering-architect (Phase 2)│ T_DATA_VERIFY → code-implementer    │ findings NOT resolved AND iter < 3 │
 # │                             │ T_DATA_PASS → code-reviewer  │ data_verification_pass OR iter >= 3 │
-# │ data-engineering-architect          │ T_DATA_TO_DEVOPS → devops-infrastructure-engineer │ deployment_only │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ code-implementer            │ T34 → code-reviewer          │ no fix flags present (initial impl │
 # │                             │                              │ or fixing_review)                  │
@@ -89,8 +97,8 @@
 # │ performance-analyst         │ T52_3 → code-implementer     │ bottlenecks_found AND iter < 3     │
 # │                             │ T52_6 → devops-infrastructure-engineer │ performance_pass OR iter >= 3 │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ devops-infrastructure-engineer       │ T67 → tech-docs-writer       │ (deployment_complete AND NOT       │
-# │                             │                              │ infrastructure_code_needs_review) OR iter >= 3    │
+# │ devops-infrastructure-engineer       │ T67 → tech-docs-writer       │ NOT infrastructure_code_needs_review │
+# │                             │                              │ OR infrastructure_review_iteration >= 3    │
 # │                             │ T_DEVOPS_REVIEW → code-reviewer   │ infrastructure_code_needs_review AND    │
 # │                             │                              │ infrastructure_review_iteration < 3              │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
@@ -107,59 +115,117 @@
 # - When iteration >= max: force forward progress regardless of issues (document unresolved issues).
 # - code-implementer state: determined by incoming transition. Use state to pick correct outgoing
 #   transition (T34 vs T_CODE_TO_SEC vs T_CODE_TO_UI vs T_CODE_TO_DATA vs T_CODE_TO_TEST vs T_CODE_TO_PERF).
+# - deployment_only: a Phase 1 data-agent outcome routed back to architecture-planner (T23c)
+#   like any other audit result. architecture-planner is the SINGLE aggregation point: it exits
+#   via T13 (implementation) or T_AGG_TO_DEVOPS (deployment_only=true — skips code-implementer,
+#   code-reviewer, and the test/perf phases). Flow continues devops → T67 → tech-docs-writer → T70 → PM.
+# - Phase 1 aggregation: re-launch architecture-planner for aggregation ONLY after ALL requested
+#   Phase 1 audits have returned (collect every T23a/b/c result first, then aggregate once).
+# - Counter resets: counters reset when the workflow advances past the loop they guard —
+#   see `counter_reset_rules` at the bottom of this file (RST_APP_REVIEW_ON_T45).
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ORCHESTRATOR-LEVEL PROTOCOLS (pre-route handling — these are NOT transitions)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# P1. USER-INPUT RELAY — `needs_user_input: true` (typically business-analyst).
+#     Subagents CANNOT ask the user directly on either platform (Claude Code removes
+#     AskUserQuestion from all subagents; Qwen Code named subagents have no
+#     ask_user_question). A result with needs_user_input=true is NOT a routing
+#     event — do NOT evaluate transitions against it. Instead:
+#     1. Extract the `questions` array from the result
+#     2. Orchestrator (main session) asks the user, batching questions where possible
+#        (Claude Code: AskUserQuestion; Qwen Code: ask_user_question — both available
+#        in the MAIN session)
+#     3. Re-launch the SAME agent with: "User answers: q1='...', q2='...'. Continue
+#        from round N." (N = `interview_round` from the result)
+#     4. When a result no longer carries needs_user_input, evaluate transitions normally.
+#     Not modeled as a transition because no agent-to-agent handoff occurs: the same
+#     agent resumes and no artifacts move.
+#     If a result carries BOTH needs_user_input and blocked, apply P1 first (user
+#     answers may unblock), then P3.
+#
+# P2. BA RESULT CONTRACT — `task_type` is REQUIRED in EVERY business-analyst result:
+#     T_BA_EXIT (task_type="full") and T_BA_RESEARCH (task_type="research") route solely
+#     on this field. needs_user_input results MUST also carry it so routing stays
+#     deterministic when the relay resumes.
+#     FALLBACK: if a final BA result omits task_type, infer it from the invoking command
+#     (/wf-orc:full → "full", /wf-orc:research → "research"), log the contract violation,
+#     and proceed — never dead-end.
+#
+# P3. BLOCKED RESULT — `blocked: true` is handled BEFORE transition evaluation.
+#     See BLOCKED-RESULT PROTOCOL comment above T34.
 
 # Agent configuration notes:
 # - `tools` (allowlist): NOT used in agent frontmatter — agents get all tools by default.
 #   Tool restrictions are platform-specific and should be handled at the platform level.
-# - `disallowedTools` (denylist): Agent can use ALL tools EXCEPT listed. Used for agents needing broad access
-#   (code-implementer, test-engineer, performance-analyst, devops-infrastructure-engineer) — they get all tools
-#   but must not launch sub-agents.
-# - `escalation_path` and `escalation_final_destination` are metadata-only fields for documentation.
-#   The orchestrator uses transitions, not these fields, for routing.
-# - `approvalMode` is NOT used — it's a Qwen Code-specific field. Claude Code handles approval via permissions.
-# - `maxTurns` is supported by Claude Code and controls max agentic turns per agent.
+# - `disallowedTools` (denylist): Agent can use ALL tools EXCEPT listed. Used for ALL 12 agents —
+#   no agent should launch sub-agents. The orchestrator manages all transitions.
+# - `maxTurns` is supported by Claude Code and Qwen Code; it caps agentic turns per agent run.
+#
+# INFORMATIONAL FLAGS (not used for routing, but provide context to orchestrator):
+# - `workflow_complete` (project-manager): Signals end of workflow. No transition uses this flag;
+#   the orchestrator recognizes this as the terminal state and reports completion to user.
+# - `verification_pass_only` (code-reviewer): Signals that code-reviewer accepted an auditor's
+#   Phase 2 verification pass without performing a full application review. Routing is based on
+#   `code_review_pass=true` (T45a/T45b); this flag is additional context for logging/debugging.
+# - `forced` (various agents): Signals that the agent completed due to iteration limit being reached,
+#   not because all issues were resolved. Used for logging; routing is based on iteration counters.
+# - `blocked` (any agent, esp. code-implementer): hard-failure signal. NOT used in any transition
+#   condition — handled by the BLOCKED-RESULT PROTOCOL above T34 (retry the same agent once with
+#   error context, then force forward with documentation).
+# - `research_complete` (architecture-planner): terminal flag for research_workflow — the orchestrator
+#   ends the workflow after architecture-planner returns this flag and reports results to the user.
+#   No transition consumes this flag; it signals completion of the research path.
+# - `source` (code-reviewer): indicates which agent sent the result (used in verification_pass_only
+#   context to track which auditor's Phase 2 pass was accepted). Informational only.
 
 agents:
 - id: business-analyst
   name: business-analyst
   max_iterations: null  # No iteration counter — limited by maxTurns: 80 in agent frontmatter
-  escalation_path: null
   description: Requirements gathering, TZ creation, project context
-  note: Entry point for /wf-orc:full and /wf-orc:research only — not part of standard workflow
+  note: >
+    Entry point for /wf-orc:full and /wf-orc:research only — not part of standard workflow.
+    RESULT CONTRACT: every result MUST include task_type ("full" | "research") —
+    T_BA_EXIT/T_BA_RESEARCH route on it (see header protocol P2 for the infer-from-command
+    fallback). needs_user_input=true triggers the P1 user-input relay, not a transition.
 - id: project-manager
   name: project-manager
   max_iterations: null
-  escalation_path: null
   entry_point: true
   description: Project management, backlog, prioritization
-  note: Has run_shell_command for pm-task-tracker skill (curl to external PM API)
+  note: >
+    Uses shell/bash tool for pm-task-tracker skill (curl to external PM API).
+    TERMINAL TRANSITION: T_PM_COMPLETE fires when documentation is complete OR
+    documentation_iteration >= 3 (forced pass). The orchestrator recognizes
+    `_terminal` as workflow end. PM MUST set workflow_complete=true in the result.
 - id: architecture-planner
   name: architecture-planner
   max_iterations: null
-  escalation_path: null
   description: Architecture, planning, documentation
 - id: security-auditor
   name: security-auditor
   max_iterations: 3
-  escalation_path: architecture-planner
-  escalation_final_destination: project-manager
   description: Security audit, vulnerabilities
 - id: ui-ux-accessibility-specialist
   name: ui-ux-accessibility-specialist
   max_iterations: 3
-  escalation_path: architecture-planner
-  escalation_final_destination: project-manager
   description: UI specifications, accessibility, UX
 - id: data-engineering-architect
   name: data-engineering-architect
   max_iterations: 3
-  escalation_path: architecture-planner
-  escalation_final_destination: project-manager
   description: ETL, SQL, data pipelines
+# `state` field on code-implementer transitions: Maps to code-implementer's states[].id.
+# Used by the orchestrator to inform code-implementer which outgoing transitions are valid.
+# 15 transitions carry this field — the 9 transitions INTO code-implementer (T13, T43,
+# T43_TEST, T43_PERF, T51_3, T52_3, T_SEC_VERIFY, T_UI_VERIFY, T_DATA_VERIFY) plus its
+# 6 outgoing transitions (T34, T_CODE_TO_SEC/UI/DATA/TEST/PERF). Note: T34 is shared
+# between the `implementing` and `fixing_review` states (state_machine_semantics: descriptive);
+# the orchestrator selects T34 based on result flags, not state equivalence.
 - id: code-implementer
   name: code-implementer
   max_iterations: null
-  escalation_path: null
   description: Code implementation, refactoring
   note: Iteration counter is reset after each successful review pass
   state_machine_semantics: descriptive  # States guide routing but agent can use any valid transition based on result flags
@@ -205,34 +271,34 @@ agents:
 - id: code-reviewer
   name: code-reviewer
   max_iterations: 3
-  escalation_path: null  # No escalation — after code-reviewer, workflow proceeds to T45a/T45b (test/performance)
-  escalation_final_destination: comprehensive-test-engineer  # Note: parallel_start launches BOTH test + performance
   description: Independent code review, code quality
 - id: comprehensive-test-engineer
   name: comprehensive-test-engineer
   max_iterations: 3
-  escalation_path: null  # No escalation — after comprehensive-test-engineer, workflow proceeds to T51_3/T51_6
-  escalation_final_destination: devops-infrastructure-engineer
   description: Testing, QA
 - id: performance-analyst
   name: performance-analyst
   max_iterations: 3
-  escalation_path: null  # No escalation — after performance-analyst, workflow proceeds to T52_3/T52_6
-  escalation_final_destination: devops-infrastructure-engineer
   description: Profiling, load testing
 - id: devops-infrastructure-engineer
   name: devops-infrastructure-engineer
   max_iterations: null
-  escalation_path: null  # No escalation — after devops-infrastructure-engineer, workflow proceeds to T67/T_DEVOPS_REVIEW
-  escalation_final_destination: tech-docs-writer
   description: CI/CD, infrastructure, deployment
 - id: tech-docs-writer
   name: tech-docs-writer
   max_iterations: 3
-  escalation_path: project-manager
-  escalation_final_destination: project-manager
   description: Documentation, guides, ADRs
 transitions:
+# T_BA_EXIT and T_BA_RESEARCH are business-analyst transitions.
+# NOTE: /wf-orc:full command (full.md) inserts an ad-hoc preliminary architecture-planner
+# run between BA and PM to create initial project structure. This step is NOT tracked
+# in workflow.yaml — it's command-specific orchestration. The DSL models the standard
+# flow: BA → PM → architect → ... The preliminary step is optional and only used
+# when starting a completely new project from scratch.
+# BA transition routing: T_BA_EXIT and T_BA_RESEARCH route exclusively on task_type.
+# FALLBACK (protocol P2): if task_type is missing from a final BA result, infer from
+# the invoking command (/wf-orc:full → "full", /wf-orc:research → "research"), log
+# the contract violation, and proceed. Never dead-end on a missing task_type.
 - id: T_BA_EXIT
   from: business-analyst
   to: project-manager
@@ -251,6 +317,11 @@ transitions:
   - cost_estimation
   type: serial
   process: research_workflow
+# T01: PM → architecture-planner. If PM returns backlog_approved=false (contract
+# violation — PM should always approve before transitioning), no transition fires.
+# The orchestrator should surface this as a protocol error and either retry PM
+# or force-terminate. Not modeled as a transition because PM's contract guarantees
+# backlog_approved=true on every non-PM-complete result.
 - id: T01
   from: project-manager
   to: architecture-planner
@@ -260,6 +331,7 @@ transitions:
   - user_stories
   - sprint_backlog
   type: serial
+  process: main_workflow
 - id: T12a
   from: architecture-planner
   to: security-auditor
@@ -271,6 +343,7 @@ transitions:
   - component_specifications
   - data_flow_diagram
   type: conditional
+  process: main_workflow
 - id: T12b
   from: architecture-planner
   to: ui-ux-accessibility-specialist
@@ -282,6 +355,7 @@ transitions:
   - component_specifications
   - data_flow_diagram
   type: conditional
+  process: main_workflow
 - id: T12c
   from: architecture-planner
   to: data-engineering-architect
@@ -293,6 +367,7 @@ transitions:
   - component_specifications
   - data_flow_diagram
   type: conditional
+  process: main_workflow
 - id: T23a
   from: security-auditor
   to: architecture-planner
@@ -303,6 +378,7 @@ transitions:
   - security_checklist
   - security_findings_report
   type: serial
+  process: main_workflow
   phase: initial_audit_collect
 - id: T23b
   from: ui-ux-accessibility-specialist
@@ -314,11 +390,14 @@ transitions:
   - accessibility_requirements
   - ui_findings_report
   type: serial
+  process: main_workflow
   phase: initial_audit_collect
+# T23c fires for ANY Phase 1 outcome, INCLUDING deployment_only. architecture-planner
+# is the single aggregation point and exits via T13 or T_AGG_TO_DEVOPS.
 - id: T23c
   from: data-engineering-architect
   to: architecture-planner
-  condition: (data_audit_complete_with_findings OR data_audit_complete_no_findings) AND NOT deployment_only
+  condition: data_audit_complete_with_findings OR data_audit_complete_no_findings OR deployment_only
   artifacts:
   - pipeline_configurations
   - data_models
@@ -326,11 +405,26 @@ transitions:
   - infrastructure_requirements
   - data_findings_report
   type: serial
+  process: main_workflow
   phase: initial_audit_collect
+# T13 condition notes:
+# - `no_specialized_audits_needed`: architecture-planner requested no audits
+# - `all_audits_complete`: architecture-planner aggregated ALL requested Phase 1 audits
+#   (a data audit that returned deployment_only counts as returned — see T23c)
+# - `deployment_only`: data-engineering-architect determined only deployment work is needed
+#   (no application code).
+#   AUTHORITY: the orchestrator evaluates deployment_only from the data agent's ORIGINAL
+#   Phase 1 result (which it keeps in workflow state); architecture-planner also echoes the
+#   flag in its aggregate result for redundancy. If either source says true, it is true.
+#
+# CRITICAL: When deployment_only=true, the orchestrator MUST:
+# 1. NOT fire T13 (skip code-implementer)
+# 2. Fire T_AGG_TO_DEVOPS → devops-infrastructure-engineer
+# 3. Continue from devops → T67 → tech-docs-writer → T70 → project-manager
 - id: T13
   from: architecture-planner
   to: code-implementer
-  condition: no_specialized_audits_needed OR all_audits_complete OR (all_non_data_audits_complete AND deployment_only)
+  condition: (no_specialized_audits_needed OR all_audits_complete) AND NOT deployment_only
   artifacts:
   - system_architecture_document
   - adrs
@@ -373,12 +467,66 @@ transitions:
     - infrastructure_requirements
     - data_findings_report
   type: serial
+  process: main_workflow
   state: implementing
   audit_tracking:
   - security-auditor
   - ui-ux-accessibility-specialist
   - data-engineering-architect
   aggregate_handoff: true
+# deployment_only exit from the single aggregation point (architecture-planner).
+# Mutually exclusive with T13 (deployment_only vs NOT deployment_only).
+# Artifacts deliberately include security/ui findings so devops receives the FULL
+# aggregated audit context in one handoff.
+- id: T_AGG_TO_DEVOPS
+  from: architecture-planner
+  to: devops-infrastructure-engineer
+  condition: deployment_only AND all_audits_complete
+  artifacts:
+  - system_architecture_document
+  - adrs
+  - implementation_plan
+  - pipeline_configurations
+  - data_models
+  - infrastructure_requirements
+  - data_findings_report
+  - security_findings_report
+  - ui_findings_report
+  type: conditional
+  process: main_workflow
+  audit_tracking:
+  - security-auditor
+  - ui-ux-accessibility-specialist
+  - data-engineering-architect
+  aggregate_handoff: true
+# ═══════════════════════════════════════════════════════════════════════════════
+# BLOCKED-RESULT PROTOCOL (any agent; most relevant to code-implementer)
+# ═══════════════════════════════════════════════════════════════════════════════
+# An agent MAY return `blocked: true` (status remains "pass") when it cannot complete:
+# build failure, missing dependency, unresolvable conflict.
+# `blocked` is NOT a routing flag — no transition condition references it.
+# DANGER: an unhandled blocked result carries no fix flags → no_fix_flags_present →
+# T34 would silently ship broken/incomplete code to code-reviewer. Therefore the
+# orchestrator MUST handle blocked BEFORE evaluating transitions:
+# 1. First `blocked: true` from a given agent launch → re-launch the SAME agent once
+#    (attempt 2 of max 2), appending the previous result's `content` (error details +
+#    attempted solutions) to the prompt as error context. When code-implementer runs
+#    per-task (run.md §3a), EACH task launch gets its own 2-attempt budget.
+# 2. Second `blocked: true` → stop retrying. Evaluate outgoing transitions normally
+#    (for code-implementer this is typically T34 → code-reviewer). Forward the blocked
+#    `content` and implementation_report so the downstream agent knows the code is
+#    incomplete, and surface the blockage prominently in the final workflow summary.
+# 3. Blocked retries NEVER increment any iteration_counter (they are not fix cycles).
+# The cap is fixed at 2 attempts by design — no counter is needed.
+# 4. CATCH-ALL: If after the 2nd blocked no transition matches (all outgoing transitions
+#    are flag-gated and the blocked result carries no routing flag), the orchestrator
+#    forces the agent's normal forward transition with the blocked content attached:
+#    - Phase-1 auditors (security/ui-ux/data) → T23a/b/c (aggregation continues)
+#    - comprehensive-test-engineer (iteration < 3) → T51_6 (devops)
+#    - performance-analyst (iteration < 3) → T52_6 (devops)
+#    - devops-infrastructure-engineer → T67 (tech-docs-writer)
+#    Log this as a forced-forward incident with the blocked content preserved.
+# If a result carries both blocked and needs_user_input, apply protocol P1 first.
 - id: T34
   from: code-implementer
   to: code-reviewer
@@ -388,11 +536,21 @@ transitions:
   - unit_tests
   - implementation_report
   type: serial
+  process: main_workflow
   state: implementing
+# T43 is mutually exclusive with T43_TEST and T43_PERF.
+# Priority: T43_TEST > T43_PERF > T43 (most-specific-flag wins).
+# T43 only fires when issues_found=true AND NOT test_fix_review AND NOT perf_fix_review.
+# Full application-context priority: T43_TEST > T43_PERF > T43 > T45a/T45b.
+# With RST_APP_REVIEW_ON_T45 applied, a loop (T43*) and a forward (T45a/b) transition can
+# never BOTH match legitimately: T43* requires its counter < 3, T45a/b counter clauses
+# require >= 3, and code_review_pass XOR issues_found per the code-reviewer contract.
+# If both DO match (a reset was missed), the priority above is decisive AND the orchestrator
+# MUST apply RST_APP_REVIEW_ON_T45 immediately (late) before the next code-reviewer evaluation.
 - id: T43
   from: code-reviewer
   to: code-implementer
-  condition: issues_found AND code_review_iteration < 3
+  condition: issues_found AND NOT test_fix_review AND NOT perf_fix_review AND code_review_iteration < 3
   artifacts:
   - code_review_report
   - quality_metrics
@@ -424,10 +582,43 @@ transitions:
   state: fixing_perf
 # Forced progress: when code_review_iteration >= 3, code-reviewer MUST set
 # code_review_pass=true to ensure forward progress even with unresolved issues.
+# Parallel branch synchronization: T45a and T45b launch simultaneously (parallel_start).
+# The orchestrator MUST wait for BOTH comprehensive-test-engineer AND performance-analyst
+# to complete before launching devops-infrastructure-engineer (parallel_join at T51_6/T52_6).
+#
+# CODE-REVIEWER CONDITION PRIORITY AND MUTUAL EXCLUSIVITY:
+# code-reviewer handles TWO contexts: application code review and infrastructure review.
+# The orchestrator MUST determine context from the INCOMING transition:
+#   - From T34, T_CODE_TO_TEST, T_CODE_TO_PERF, T_SEC_PASS, T_UI_PASS, T_DATA_PASS
+#     → application code review (T_SEC/UI/DATA_PASS carry verification_pass_only)
+#   - From T_DEVOPS_REVIEW → infrastructure review
+#
+# In application code review context, evaluate ONLY: T43, T43_TEST, T43_PERF, T45a, T45b.
+# In infrastructure review context, evaluate ONLY: T_DEVOPS_REVIEW_PASS, T_DEVOPS_REVIEW_FAIL,
+#   T_DEVOPS_REVIEW_FORCE_PASS.
+#
+# The T_DEVOPS_REVIEW_* transitions MUST NOT be evaluated in application code review context,
+# even though their conditions (based on absent infra flags) would otherwise appear true.
+# See `code_reviewer_context` fragment for the executable rules.
+#
+# code-reviewer MUST always return exactly one of:
+#   - code_review_pass=true (application pass)
+#   - issues_found=true (application issues)
+#   - test_fix_review=true + issues_found=true (test fix issues)
+#   - perf_fix_review=true + issues_found=true (perf fix issues)
+#   - infrastructure_review_pass=true/false (infrastructure review result)
+# Fallback: if no flag is returned (contract violation), treat it as code_review_pass=true
+# and route via T45a/T45b; log the contract violation.
+# T45a/T45b also fire when test_fix_review_iteration or perf_fix_review_iteration
+# reaches max, preventing a dead-end when only those counters hit 3.
+# When T45a/T45b fire, apply counter_reset_rules.RST_APP_REVIEW_ON_T45:
+# reset code_review_iteration, test_fix_review_iteration, perf_fix_review_iteration to 0
+# AFTER evaluating conditions and BEFORE launching the test/perf agents. Do NOT reset
+# test_iteration, performance_iteration, or infrastructure_review_iteration.
 - id: T45a
   from: code-reviewer
   to: comprehensive-test-engineer
-  condition: code_review_pass OR code_review_iteration >= 3
+  condition: code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3
   artifacts:
   - source_code
   - unit_tests
@@ -438,10 +629,11 @@ transitions:
   - system_architecture_document
   - adrs
   type: parallel_start
+  process: main_workflow
 - id: T45b
   from: code-reviewer
   to: performance-analyst
-  condition: code_review_pass OR code_review_iteration >= 3
+  condition: code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3
   artifacts:
   - source_code
   - unit_tests
@@ -452,6 +644,7 @@ transitions:
   - system_architecture_document
   - adrs
   type: parallel_start
+  process: main_workflow
 - id: T51_3
   from: comprehensive-test-engineer
   to: code-implementer
@@ -462,15 +655,19 @@ transitions:
   type: loop
   process: testing_bug_fixes
   state: fixing_test
+# T51_6: broadened to handle contract violations — if CTE returns neither bugs_found
+# nor tests_pass (partial execution, env issues without blocked), the old condition
+# would dead-end when test_iteration < 3. `NOT bugs_found` catches this case.
 - id: T51_6
   from: comprehensive-test-engineer
   to: devops-infrastructure-engineer
-  condition: tests_pass OR test_iteration >= 3
+  condition: tests_pass OR test_iteration >= 3 OR NOT bugs_found
   artifacts:
   - testing_report
   - coverage_metrics
   - tested_application
   type: parallel_join
+  process: main_workflow
 - id: T52_3
   from: performance-analyst
   to: code-implementer
@@ -481,19 +678,29 @@ transitions:
   type: loop
   process: performance_optimization
   state: fixing_perf
+# T52_6: broadened to handle contract violations — if perf-analyst returns neither
+# bottlenecks_found nor performance_pass, the old condition would dead-end when
+# performance_iteration < 3. `NOT bottlenecks_found` catches this case.
 - id: T52_6
   from: performance-analyst
   to: devops-infrastructure-engineer
-  condition: performance_pass OR performance_iteration >= 3
+  condition: performance_pass OR performance_iteration >= 3 OR NOT bottlenecks_found
   artifacts:
   - profiling_report
   - load_test_results
   - optimized_application
   type: parallel_join
+  process: main_workflow
+# T67: devops → tech-docs-writer. Condition deliberately broad: fires whenever
+# devops does NOT need a code review (regardless of deployment_complete), OR when
+# the infrastructure review counter hits max. The old condition required
+# `deployment_complete AND NOT infrastructure_code_needs_review`, which dead-ended
+# when deployment failed due to external factors (cloud provider down) without
+# code review being needed — neither T67 nor T_DEVOPS_REVIEW would fire.
 - id: T67
   from: devops-infrastructure-engineer
   to: tech-docs-writer
-  condition: (deployment_complete AND NOT infrastructure_code_needs_review) OR infrastructure_review_iteration >= 3
+  condition: NOT infrastructure_code_needs_review OR infrastructure_review_iteration >= 3
   artifacts:
   - container_images
   - deployment_manifests
@@ -502,6 +709,7 @@ transitions:
   - terraform_configs
   - kubernetes_manifests
   type: serial
+  process: main_workflow
 - id: T70
   from: tech-docs-writer
   to: project-manager
@@ -512,6 +720,7 @@ transitions:
   - runbooks
   - release_notes
   type: serial
+  process: main_workflow
 - id: T70_REV
   from: project-manager
   to: tech-docs-writer
@@ -521,6 +730,21 @@ transitions:
   - feedback_notes
   type: loop
   process: documentation_review
+# T_PM_COMPLETE: explicit terminal transition for project-manager. Without this,
+# if PM returns `documentation_needs_revision: true` when `documentation_iteration >= 3`,
+# neither T01 (requires `backlog_approved`) nor T70_REV (requires `< 3`) would fire → deadlock.
+# The orchestrator recognizes `_terminal` as workflow end and reports completion to user.
+- id: T_PM_COMPLETE
+  from: project-manager
+  to: _terminal
+  condition: documentation_complete OR documentation_iteration >= 3
+  type: terminal
+  process: main_workflow
+  note: >
+    PM sets workflow_complete=true in its result. Orchestrator ends workflow.
+    This transition also covers the forced-pass case (iteration >= 3) where PM
+    may still set documentation_needs_revision — treat as protocol violation
+    and force-terminate.
 - id: T_CODE_TO_SEC
   from: code-implementer
   to: security-auditor
@@ -580,6 +804,7 @@ transitions:
   - security_checklist
   - security_findings_report
   type: serial
+  process: main_workflow
   phase: verification
 - id: T_UI_VERIFY
   from: ui-ux-accessibility-specialist
@@ -607,6 +832,7 @@ transitions:
   - accessibility_requirements
   - ui_findings_report
   type: serial
+  process: main_workflow
   phase: verification
 - id: T_DATA_VERIFY
   from: data-engineering-architect
@@ -636,17 +862,19 @@ transitions:
   - infrastructure_requirements
   - data_findings_report
   type: serial
+  process: main_workflow
   phase: verification
-- id: T_DATA_TO_DEVOPS
-  from: data-engineering-architect
-  to: devops-infrastructure-engineer
-  condition: deployment_only
-  artifacts:
-  - pipeline_configurations
-  - data_models
-  - infrastructure_requirements
-  type: conditional
-  phase: initial_audit_collect
+# NOTE: T_CODE_TO_SEC, T_CODE_TO_UI, T_CODE_TO_DATA, T_CODE_TO_TEST, T_CODE_TO_PERF
+# are loop transitions WITHOUT their own iteration guards. This is by design:
+# the iteration guards are on the REVIEWING agent's outgoing transitions
+# (T_SEC_VERIFY, T_UI_VERIFY, T_DATA_VERIFY, T43_TEST, T43_PERF respectively).
+# The fixing agent (code-implementer) reports completion; the reviewing agent
+# decides whether to loop back or proceed forward.
+#
+# CODE-IMPLEMENTER OUTGOING PRIORITY (if multiple fix flags are set simultaneously):
+# T_CODE_TO_SEC > T_CODE_TO_UI > T_CODE_TO_DATA > T_CODE_TO_TEST > T_CODE_TO_PERF > T34
+# The code-implementer contract SHOULD guarantee at most one fix flag per result.
+# If multiple flags appear (contract violation), the priority above is decisive.
 - id: T_CODE_TO_TEST
   from: code-implementer
   to: code-reviewer
@@ -712,18 +940,20 @@ processes:
   name: Main Development Workflow
   description: >
     Primary development flow. Specialized Phase 1 audits return to architecture-planner for
-    aggregation before implementation. Exception: when data-engineering-architect returns deployment_only=true,
-    it bypasses architecture-planner and goes directly to devops-infrastructure-engineer (T_DATA_TO_DEVOPS). In this case, T13 treats
-    data audit as complete.
+    aggregation before implementation. When data-engineering-architect reports deployment_only=true,
+    architecture-planner still aggregates it (T23c) and then routes directly to
+    devops-infrastructure-engineer (T_AGG_TO_DEVOPS) — code-implementer, code-reviewer, and the
+    test/perf phases are skipped. After the parallel test+performance branch, T51_6/T52_6 route
+    directly to devops-infrastructure-engineer (code-reviewer is re-entered only within fix loops
+    via T_CODE_TO_TEST/T_CODE_TO_PERF).
   steps:
   - project-manager
   - architecture-planner
   - '[security-auditor | ui-ux-accessibility-specialist | data-engineering-architect]'
-  - 'architecture-planner (or devops-infrastructure-engineer if data deployment_only)'
-  - code-implementer
+  - architecture-planner  # aggregation → T13 (impl) or T_AGG_TO_DEVOPS (deployment_only)
+  - code-implementer      # skipped when deployment_only
   - code-reviewer
   - '[comprehensive-test-engineer + performance-analyst]'
-  - code-reviewer
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
@@ -815,11 +1045,11 @@ processes:
   - project-manager
 - id: infrastructure_review
   name: Infrastructure Review
-  description: After devops-infrastructure-engineer creates infrastructure code, code-reviewer reviews it (max 3 iterations).
+  description: After devops-infrastructure-engineer creates infrastructure code, code-reviewer reviews it. Loops up to infrastructure_review_iteration max (3). On forced pass (iter >= 3), proceeds with documented issues.
   steps:
   - devops-infrastructure-engineer
   - code-reviewer
-  - devops-infrastructure-engineer
+  - devops-infrastructure-engineer  # loops back to code-reviewer if issues remain (max 3x)
 quality_metrics:
 - agent: project-manager
   metrics:
@@ -974,6 +1204,10 @@ file_conventions:
     test_file:
       format: test_<component>_<scenario>.<ext>
       example: test_auth_login_success.py
+    openapi_spec:
+      format: openapi.yaml
+      location: docs/guides/api/openapi.yaml
+      description: OpenAPI specification — source of truth for API documentation
   task_statuses:
   - BACKLOG: In queue, not yet started
   - IN_PROGRESS: Currently being worked on by assigned agent
@@ -1068,6 +1302,7 @@ file_conventions:
     - test/e2e/test_<scenario>.py
     - docs/testing/test-plan.md
     - docs/testing/test-report.md
+    - docs/testing/coverage-report.md
     - docs/testing/bug-reports/BUG-<NNN>_<slug>.md
     reads:
     - Source code and unit tests
@@ -1079,6 +1314,8 @@ file_conventions:
     - test/performance/test_<scenario>.py
     - docs/performance/profiling-report.md
     - docs/performance/load-test-results.md
+    - docs/performance/benchmarks.md
+    - docs/performance/optimization-log.md
     reads:
     - Source code and unit tests
     - docs/requirements/ (performance SLOs)
@@ -1097,8 +1334,9 @@ file_conventions:
     - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
   - agent: tech-docs-writer
     creates:
-    - docs/guides/api-docs.md
-    - docs/guides/user-guide.md
+    - docs/guides/api/api-docs.md
+    - docs/guides/api/openapi.yaml
+    - docs/guides/user/user-guide.md
     - docs/guides/runbooks/runbook-<NNN>_<slug>.md
     - docs/guides/release-notes/CHANGELOG.md
     reads:
@@ -1174,6 +1412,10 @@ file_conventions:
     - **CANCELLED** — cancelled
 
     '
+# Counter Increment Rules:
+# Counters increment EACH time an agent re-runs for fixes (loop transition fires).
+# Specifically: increment AFTER receiving a loop result (issues_found, bugs_found, etc.)
+# and BEFORE re-launching the fixing agent. The orchestrator tracks all counters.
 iteration_counters:
   code_review_iteration:
     owner: code-reviewer
@@ -1225,3 +1467,42 @@ iteration_counters:
     scope: documentation_review
     max: 3
     description: project-manager requests doc revision → tech-docs-writer revises → project-manager re-reviews
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Counter Reset Rules (applied by the orchestrator)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Counters RESET when the workflow advances PAST the loop they guard. A stale counter
+# left at max causes spurious multi-transition matches — e.g. code_review_iteration=3
+# left over from a forced pass would make T45a/T45b match AGAIN (via their ">= 3"
+# clauses) the next time code-reviewer runs in test-fix-review context, conflicting
+# with T43_TEST.
+#
+# APPLICATION ORDER after each agent completes (strict):
+#   1. Evaluate ALL outgoing transition conditions using PRE-RESET counter values
+#   2. Select and fire the matching transition(s)
+#   3. Apply every reset rule triggered by the fired transition(s) — ONCE per event
+#      (T45a+T45b fire together as one parallel_start event → one reset, not two)
+#   4. Launch the target agent(s)
+# A reset NEVER retroactively changes the evaluation that triggered it.
+counter_reset_rules:
+- id: RST_APP_REVIEW_ON_T45
+  trigger: T45a/T45b fire (workflow advances from application code review into the parallel
+    test+performance phase)
+  reset_to_zero:
+  - code_review_iteration
+  - test_fix_review_iteration
+  - perf_fix_review_iteration
+  rationale: >
+    Application review is concluded. All later code-reviewer runs (test-fix review via
+    T_CODE_TO_TEST, perf-fix review via T_CODE_TO_PERF) are fresh review cycles and get
+    fresh budgets. Preserves the forced-exit property: when test_fix_review_iteration or
+    perf_fix_review_iteration reaches max, T45a/b force-fire — and the reset then clears
+    them so the next cycle is not born force-passed.
+  must_not_reset:
+  - counter: test_iteration
+    reason: bounds the OUTER test cycle (T51_3 re-entry requires < 3); resetting it would
+      allow unbounded test→fix→retest looping
+  - counter: performance_iteration
+    reason: bounds the OUTER performance cycle (T52_3)
+  - counter: infrastructure_review_iteration
+    reason: separate scope; infrastructure review has not started when T45 fires

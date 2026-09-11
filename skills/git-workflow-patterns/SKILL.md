@@ -158,7 +158,7 @@ Machine-readable commit messages that enable automated changelogs, semantic vers
 | `build` | — | Build system or external dependencies |
 | `ci` | — | CI/CD configuration changes |
 | `chore` | — | Maintenance tasks |
-| `revert` | — | Reverting a previous commit |
+| `revert` | PATCH | Reverting a previous commit |
 
 **Examples:**
 
@@ -295,9 +295,13 @@ git status
 # Shows which files have conflicts
 
 # 2. Open the conflicted file — look for markers:
-# <<<<<<< HEAD (your branch)
+# <<<<<<< HEAD             ← origin/main (upstream) side — NOT your branch!
 # =======
-# >>>>>>> origin/main (incoming)
+# >>>>>>> abc1234 (commit)  ← YOUR commit being replayed
+# This is INVERTED relative to merge: during `git rebase origin/main`, git
+# checks out the upstream as HEAD and replays your commits onto it, so the
+# HEAD side is origin/main's code and the bottom side is yours — the opposite
+# of what the markers mean during `git merge`.
 
 # 3. Resolve: keep both, keep one, or merge manually
 # 4. Stage and continue
@@ -328,7 +332,14 @@ git mergetool --tool=vimdiff
 git config --global merge.tool vscode
 git config --global mergetool.vscode.cmd 'code --wait $MERGED'
 
-# Three-way diff (base, ours, theirs)
+# Combined diff against all parents of a merge commit (NOT a three-way
+# base/ours/theirs diff — `git diff --cc` collapses the parents into one
+# side and shows only the hunks that differ from ALL of them).
+# For conflict-resolution workflows, prefer re-checking out in diff3 mode
+# and staging the resolved file:
+#   git checkout --conflict=diff3 <file>   # re-materialize conflict markers
+#   # ... resolve ...
+#   git add <file>
 git diff --cc <file>
 ```
 
@@ -409,7 +420,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npx semantic-release
@@ -462,7 +473,7 @@ repos:
           - "@typescript-eslint/parser"
 
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v4.0.0-alpha.8
+    rev: ^3.0.0
     hooks:
       - id: prettier
         types_or: [javascript, jsx, ts, tsx, json, yaml, markdown]
@@ -471,14 +482,16 @@ repos:
 **Husky + commitlint (Node.js projects):**
 
 ```bash
-# Install
-npm install -D husky @commitlint/cli @commitlint/config-conventional
+# Install — includes lint-staged, which the pre-commit hook below invokes.
+# IMPORTANT: eslint-config-prettier disables ESLint rules that conflict with Prettier.
+# Run eslint --fix BEFORE prettier --write to avoid formatting conflicts.
+npm install -D husky @commitlint/cli @commitlint/config-conventional lint-staged eslint-config-prettier
 
 # Initialize husky
 npx husky init
 
 # Add commit-msg hook
-echo 'npx --no -- commitlint --edit ${1}' > .husky/commit-msg
+echo 'npx --no-install -- commitlint --edit ${1}' > .husky/commit-msg
 chmod +x .husky/commit-msg
 
 # Add pre-commit hook
@@ -493,6 +506,10 @@ chmod +x .husky/pre-commit
 
 ```json
 {
+  "scripts": {
+    "lint:staged": "lint-staged",
+    "typecheck": "tsc --noEmit"
+  },
   "lint-staged": {
     "*.{ts,tsx}": [
       "eslint --fix",
@@ -523,15 +540,18 @@ git commit -m "fix(payment): handle timeout in Stripe webhook"
 git checkout main
 git merge --no-ff hotfix/fix-payment-timeout
 
-# 4. Cherry-pick the fix to the release branch
+# 4. Cherry-pick the fix to the release branch (use -x to record provenance)
 git checkout release/2.3
-git cherry-pick <commit-sha>
+git cherry-pick -x <commit-sha>
 
 # 5. Tag the new release
 git tag -a v2.3.2 -m "fix: payment timeout hotfix"
 git push origin v2.3.2
 
-# 6. Clean up
+# 6. Clean up — switch back to main first; -d succeeds because main contains
+#    the merged hotfix (step 3); the cherry-pick onto release/2.3 is a separate
+#    lineage, so staying on release/2.3 would make -d fail ("not fully merged")
+git checkout main
 git branch -d hotfix/fix-payment-timeout
 ```
 
@@ -546,7 +566,9 @@ git cherry-pick --no-commit <sha>
 git diff --cached
 git commit
 
-# Cherry-pick with preserved author and timestamp
+# Cherry-pick with provenance recorded in the commit message
+# (preserving the original author/timestamp is cherry-pick's DEFAULT behavior;
+#  -x only appends the provenance line below)
 git cherry-pick -x <sha>
 # Adds "(cherry picked from commit <sha>)" to message
 
@@ -576,7 +598,7 @@ git cherry-pick --abort
 9. **Keep branches short-lived** — stale branches accumulate conflicts; merge or rebase at least daily
 10. **Document your workflow** — add a `CONTRIBUTING.md` that describes branching, commit, and PR conventions
 11. **Use `git reflog` for recovery** — lost commits are almost always recoverable via `git reflog`
-12. **Tag releases from `main`** — never tag from feature branches; tags should be immutable
+12. **Tag from the integration/release branch your model designates** — typically `main` or the active `release/*` branch; never tag from feature branches; tags should be immutable
 
 ---
 
@@ -599,10 +621,10 @@ git cherry-pick --abort
 
 ## Context7 Integration
 
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
+
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
 | Git | (query "Git") | Advanced merge strategies, rebase workflows |
 | Conventional Commits | (query "Conventional Commits") | Specification updates |
 | pre-commit | (query "pre-commit framework") | Hook configuration |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs`.

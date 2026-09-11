@@ -78,22 +78,80 @@ Each test must be independent:
 ### Pattern 1: Pytest Fixtures (Dependency Injection)
 
 ```python
-# conftest.py — shared fixtures
+# conftest.py — shared fixtures and canonical test doubles
 import pytest
 from unittest.mock import AsyncMock
+from sqlalchemy.orm import sessionmaker
+
+
+# --- Test doubles (canonical API — used consistently across all patterns) ---
+
+class FakeUserRepository:
+    """In-memory test double.  API mirrors database-patterns repository
+    (add / get / list / delete) but is synchronous for unit tests."""
+
+    def __init__(self):
+        self._store: dict[int, dict] = {}
+        self._next_id = 1
+
+    def add(self, data: dict) -> dict:
+        user = {**data, "id": self._next_id}
+        self._store[self._next_id] = user
+        self._next_id += 1
+        return user
+
+    def get(self, user_id: int) -> dict | None:
+        return self._store.get(user_id)
+
+    def list(self, *, offset: int = 0, limit: int = 100) -> list[dict]:
+        users = sorted(self._store.values(), key=lambda u: u["id"])
+        return users[offset : offset + limit]
+
+    def delete(self, user_id: int) -> bool:
+        return self._store.pop(user_id, None) is not None
+
+    def exists_by_email(self, email: str) -> bool:
+        return any(u["email"] == email for u in self._store.values())
+
+
+class UserService:
+    """Canonical service — always constructed with (repo, email_service)."""
+
+    def __init__(self, repo, email_service=None):
+        self.repo = repo
+        self.email_service = email_service
+
+    def create(self, data: dict) -> dict:
+        user = self.repo.add(data)
+        if self.email_service:
+            self.email_service.send(to=data.get("email"), template="welcome")
+        return user
+
+    async def create_async(self, data: dict) -> dict:
+        return self.create(data)
+
+
+# --- Fixtures ---
+
+@pytest.fixture
+def user_repo():
+    """Fresh in-memory repository per test."""
+    return FakeUserRepository()
+
 
 @pytest.fixture
 def user_data():
-    """Base user data for tests."""
+    """Base user data for tests (password meets the min-12 policy)."""
     return {
         "name": "Test User",
         "email": "test@example.com",
-        "password": "Secure123!"
+        "password": "correct-horse-battery",
     }
+
 
 @pytest.fixture
 def db_session(db_engine):
-    """Create isolated DB session for each test."""
+    """Create isolated DB session for each test (transaction-scoped)."""
     connection = db_engine.connect()
     transaction = connection.begin()
     Session = sessionmaker(bind=connection)
@@ -105,6 +163,7 @@ def db_session(db_engine):
     transaction.rollback()  # Clean up — no residue
     connection.close()
 
+
 @pytest.fixture
 def mock_email_service():
     """Mock external email service."""
@@ -112,13 +171,12 @@ def mock_email_service():
     mock.send.return_value = {"message_id": "test-123"}
     return mock
 
+
 @pytest.fixture
-def user_service(db_session, mock_email_service):
+def user_service(user_repo, mock_email_service):
     """Service with mocked dependencies."""
-    return UserService(
-        db=db_session,
-        email_service=mock_email_service
-    )
+    return UserService(repo=user_repo, email_service=mock_email_service)
+
 
 # test_user_service.py
 def test_create_user(user_service, user_data):
@@ -129,7 +187,7 @@ def test_create_user(user_service, user_data):
     user = user_service.create(user_data)
 
     # Assert
-    assert user.name == "Test User"
+    assert user["name"] == "Test User"
     email_svc.send.assert_called_once()  # verify side effect
 ```
 
@@ -138,12 +196,13 @@ def test_create_user(user_service, user_data):
 ```python
 import pytest
 
+# Password POLICY (canonical: secure-coding-patterns, NIST SP 800-63B):
+# min length 12, NO composition rules, breach-list check recommended.
 @pytest.mark.parametrize("password,expected_error", [
-    ("short", "at least 8 characters"),
-    ("nouppercase1", "one uppercase letter"),
-    ("NOLOWERCASE1", "one lowercase letter"),
-    ("NoDigitsHere", "one digit"),
-    ("Valid123!", None),  # should pass
+    ("short", "at least 12 characters"),
+    ("Secure123!", "at least 12 characters"),    # composition doesn't compensate for length
+    ("correct-horse-battery", None),             # 12+ chars — valid, no composition required
+    ("password123456789", "known breach data"),  # long but breached — reject (matches secure-coding-patterns: "Password appears in known breach data — choose another")
 ])
 def test_password_validation(password, expected_error):
     if expected_error:
@@ -180,8 +239,8 @@ async def test_async_user_creation(user_service, user_data):
     user = await user_service.create_async(user_data)
 
     # Assert
-    assert user.email == expected_email
-    assert user.id is not None
+    assert user["email"] == expected_email
+    assert user["id"] is not None
 
 @pytest.mark.asyncio
 async def test_service_handles_external_failure():
@@ -191,6 +250,7 @@ async def test_service_handles_external_failure():
     mock_payment.process.side_effect = ConnectionError("Payment gateway down")
 
     service = OrderService(payment_service=mock_payment)
+    order_data = {"items": [{"id": 1, "qty": 2}], "total": 29.99}
 
     # Act & Assert
     with pytest.raises(ServiceError, match="Payment unavailable"):
@@ -238,37 +298,40 @@ def session(test_db):
     transaction.rollback()
 
 # tests/integration/test_user_repository.py
-def test_repository_crud(session):
-    """Full integration test with real DB."""
-    repo = UserRepository(session)
+def test_repository_crud():
+    """Full integration test — uses FakeUserRepository (same API as
+    database-patterns: add / get / list / delete).  Swap in a real
+    repository backed by the `session` fixture for true DB integration."""
+    repo = FakeUserRepository()
 
-    # Create
-    user = repo.create(UserCreate(name="Test", email="test@test.com"))
-    assert user.id is not None
+    # Create (add)
+    user = repo.add({"name": "Test", "email": "test@test.com"})
+    assert user["id"] is not None
 
-    # Read
-    found = repo.get_by_id(user.id)
-    assert found.name == "Test"
+    # Read (get)
+    found = repo.get(user["id"])
+    assert found["name"] == "Test"
 
-    # Update
-    repo.update(user.id, name="Updated")
-    updated = repo.get_by_id(user.id)
-    assert updated.name == "Updated"
+    # List
+    all_users = repo.list()
+    assert len(all_users) == 1
 
     # Delete
-    repo.delete(user.id)
-    assert repo.get_by_id(user.id) is None
+    assert repo.delete(user["id"]) is True
+    assert repo.get(user["id"]) is None
 ```
 
 ### Pattern 5: Mocking Anti-Patterns (and how to do it right)
 
 ```python
+from unittest.mock import MagicMock, patch
+
 # ❌ BAD: Overmocking — test passes but verifies nothing
 @patch("myapp.service.UserRepository")
 @patch("myapp.service.EmailService")
 @patch("myapp.service.AuditService")
 def test_create_user(mock_audit, mock_email, mock_repo):
-    mock_repo.create.return_value = User(id=1, name="Test")
+    mock_repo.add.return_value = {"id": 1, "name": "Test"}
     mock_email.send.return_value = {"id": "123"}
 
     result = create_user({"name": "Test"})  # no real assertions!
@@ -276,18 +339,18 @@ def test_create_user(mock_audit, mock_email, mock_repo):
 
 
 # ✅ GOOD: Partial mocking — mock only external services
-@patch("myapp.services.email.EmailService.send")
-def test_create_user_sends_email(mock_send, db_session):
+def test_create_user_sends_email(user_repo):
     """Verify user creation triggers email notification."""
-    mock_send.return_value = {"message_id": "test-123"}
+    mock_email = MagicMock()
+    mock_email.send.return_value = {"message_id": "test-123"}
 
-    service = UserService(db=db_session)
+    service = UserService(repo=user_repo, email_service=mock_email)
     user = service.create({"name": "Test", "email": "test@test.com"})
 
     # Assert real behavior
-    assert user.id is not None
-    assert user.email == "test@test.com"
-    mock_send.assert_called_once_with(
+    assert user["id"] is not None
+    assert user["email"] == "test@test.com"
+    mock_email.send.assert_called_once_with(
         to="test@test.com",
         template="welcome"
     )
@@ -300,14 +363,12 @@ def test_create_user(mock_create):
 
 
 # ✅ GOOD: Mock dependencies, not the system under test
-def test_create_user_calls_repository(db_session):
-    repo = UserRepository(db_session)  # real repo, with test DB
-
-    service = UserService(repo)
-    user = service.create_user({"name": "Test"})
+def test_create_user_calls_repository(user_repo):
+    service = UserService(repo=user_repo)  # real repo (FakeUserRepository)
+    user = service.create({"name": "Test"})
 
     # Verify the result through the real repository
-    found = repo.get_by_id(user.id)
+    found = user_repo.get(user["id"])
     assert found is not None
 ```
 
@@ -321,7 +382,9 @@ pytest tests/ \
     --cov-report=term-missing \
     --cov-fail-under=80 \
     --cov-branch
+```
 
+```toml
 # Coverage configuration in pyproject.toml
 [tool.coverage.run]
 source = ["myapp"]
@@ -346,75 +409,130 @@ show_missing = true
 ### Pattern 7: Testing Error Handling
 
 ```python
-def test_service_raises_on_invalid_input():
+def test_service_raises_on_invalid_input(user_repo):
     """Verify proper error handling for bad input."""
-    service = UserService(db_session)
+    service = UserService(repo=user_repo)
 
     with pytest.raises(ValidationError) as exc_info:
         service.create({"name": "", "email": "not-an-email"})
 
     assert "email" in str(exc_info.value)
 
-def test_service_rollback_on_failure(db_session):
-    """Verify DB rollback when email service fails."""
-    with patch.object(EmailService, "send", side_effect=ConnectionError):
-        with pytest.raises(ServiceError):
-            UserService(db_session).create(user_data)
+def test_service_no_partial_data_on_failure(user_repo):
+    """Verify no partial data when email service fails after create."""
+    mock_email = AsyncMock()
+    mock_email.send.side_effect = ConnectionError("SMTP down")
+    service = UserService(repo=user_repo, email_service=mock_email)
 
-    # Verify no partial data — transaction rolled back
-    from sqlalchemy import select
-    stmt = select(User).where(User.email == "test@test.com")
-    user = db_session.scalar(stmt)
-    assert user is None
+    with pytest.raises(ServiceError):
+        service.create({"name": "Test", "email": "test@test.com"})
+
+    # Verify no partial data — repo is empty because the service
+    # should not leave orphaned records when a side-effect fails.
+    assert user_repo.list() == []
 ```
 
 ### Pattern 8: Property-Based Testing (Hypothesis)
 
 ```python
 from hypothesis import given, strategies as st
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+def make_test_session():
+    """Self-contained DB setup, safe to call for EVERY generated example."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)()
 
 @given(
     name=st.text(min_size=1, max_size=100),
     email=st.emails()
 )
 def test_user_creation_always_succeeds(name, email):
-    """Property: any valid name + email should create user."""
-    service = UserService(db_session)
+    """Property: any valid name + email should create user.
+
+    Note: @given CANNOT be combined with function-scoped pytest fixtures —
+    a fixture runs once per test function, not once per generated example,
+    so Hypothesis raises HealthCheck.function_scoped_fixture. Set up
+    resources inside the test (as here) or use module-scoped fixtures.
+    """
+    repo = FakeUserRepository()
+    service = UserService(repo=repo)
     user = service.create({"name": name, "email": email})
 
-    assert user.name == name
-    assert user.email == email
-    assert user.id is not None
+    assert user["name"] == name
+    assert user["email"] == email
+    assert user["id"] is not None
 
-@given(st.integers())
-def test_pagination_never_returns_more_than_page_size(user_id):
-    """Property: pagination always respects page_size."""
-    results = repo.list_users(page=1, page_size=20)
-    assert len(results) <= 20
+@given(page_size=st.integers(min_value=1, max_value=100))
+def test_pagination_never_returns_more_than_page_size(page_size):
+    """Property: pagination always respects page_size and returns
+    disjoint pages — the generated value is the one being asserted on."""
+    repo = FakeUserRepository()
+    # Insert page_size + k rows so the assertion is non-vacuous
+    total_rows = page_size + min(page_size, 5)
+    for i in range(total_rows):
+        repo.add({"name": f"User {i}", "email": f"user{i}@test.com"})
+
+    page1 = repo.list(offset=0, limit=page_size)
+    page2 = repo.list(offset=page_size, limit=page_size)
+
+    assert len(page1) <= page_size
+    assert len(page2) <= page_size
+    # Pages must be disjoint (no overlapping IDs)
+    ids1 = {u["id"] for u in page1}
+    ids2 = {u["id"] for u in page2}
+    assert ids1.isdisjoint(ids2)
 ```
 
 > **See also**: `javascript-typescript-professional` — Vitest setup, TS testing patterns, React component testing.
 
 ### Contract Testing (Pact)
 ```python
-# Consumer test — defines expected interaction
-import pact
+# Consumer test — defines expected interaction (pact-python 3.x API)
+from collections.abc import Generator
+from pathlib import Path
 
-with pact.Consumer('UserService').has_pact_with(pact.Provider('AuthServer')) as p:
-    (p.given('user alice exists')
-     .upon_receiving('a request to authenticate alice')
-     .with_request('POST', '/auth/login',
-                   body={'email': 'alice@example.com', 'password': 'secret123'},
-                   headers={'Content-Type': 'application/json'})
-     .will_respond_with(200,
-                        body={'token': pact.like('eyJhbG...'), 'expires_in': 3600},
-                        headers={'Content-Type': 'application/json'}))
+import pytest
+from pact import Pact, match
 
-    # Consumer code under test
-    auth_client = AuthClient(base_url=p.uri)
-    result = auth_client.login('alice@example.com', 'secret123')
-    assert result['expires_in'] == 3600
+
+@pytest.fixture
+def pact() -> Generator[Pact, None, None]:
+    """Set up a Pact mock provider for consumer tests."""
+    pact = Pact("UserService", "AuthServer").with_specification("V4")
+    yield pact
+    pact.write_file(Path(__file__).parent / "pacts")
+
+
+def test_auth_login(pact: Pact) -> None:
+    # Methods before will_respond_with() configure the REQUEST,
+    # methods after it configure the RESPONSE
+    (
+        pact
+        .upon_receiving("a request to authenticate alice")
+        .given("user alice exists")
+        .with_request("POST", "/auth/login")
+        .with_body(
+            {"email": "alice@example.com", "password": "correct-horse-battery"},
+            content_type="application/json",
+        )
+        .will_respond_with(200)
+        .with_body(
+            {"token": match.str("eyJhbG..."), "expires_in": match.int(3600)},
+            content_type="application/json",
+        )
+    )
+
+    # Consumer code under test, against the Pact mock server
+    with pact.serve() as srv:
+        auth_client = AuthClient(base_url=str(srv.url))
+        result = auth_client.login("alice@example.com", "correct-horse-battery")
+        assert result["expires_in"] == 3600
 ```
+
+> **Version caveat**: pact-python ≤ 1.x used `pact.Consumer(...).has_pact_with(pact.Provider(...))` with lowercase `pact.like(...)`; the legacy v2 API lives under `pact.v2` (capitalized matchers: `from pact.v2.matchers import Like`). Current 3.x uses the single `Pact` class and `from pact import match` as shown above — see the project's MIGRATION.md.
 
 ### Testcontainers for Integration Tests
 ```python
@@ -422,11 +540,11 @@ with pact.Consumer('UserService').has_pact_with(pact.Provider('AuthServer')) as 
 import pytest
 from testcontainers.postgres import PostgresContainer
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker  # async context: use async_sessionmaker
 
 @pytest.fixture(scope="session")
 def postgres_container():
-    with PostgresContainer("postgres:16-alpine") as pg:
+    with PostgresContainer("postgres:17-alpine") as pg:
         yield pg
 
 @pytest.fixture(scope="session")
@@ -444,11 +562,22 @@ def db_engine(postgres_container):
 
 @pytest.fixture
 def db_session(db_engine):
-    Session = sessionmaker(bind=db_engine)
+    """Transaction-scoped session — auto-rollback after test.
+
+    Uses an outer transaction so that tests can call commit() freely
+    without leaking data — the outer transaction is rolled back on
+    teardown, discarding all commits (same recipe as Pattern 1).
+    """
+    connection = db_engine.connect()
+    transaction = connection.begin()
+    Session = sessionmaker(bind=connection)
     session = Session()
+
     yield session
-    session.rollback()
+
     session.close()
+    transaction.rollback()
+    connection.close()
 
 def test_create_user(db_session):
     user = User(email="test@example.com", name="Test")
@@ -459,24 +588,30 @@ def test_create_user(db_session):
 
 ### Mutation Testing (mutmut)
 ```bash
-# Install and run mutation testing
+# Install and run mutation testing (mutmut 3.x — always pytest-driven)
 pip install mutmut
-mutmut run --paths-to-mutate=src/
+mutmut run
 
-# Check results
+# Check results (lists surviving mutants by default; --all includes killed)
 mutmut results
 
-# Show survived mutants for review
-mutmut show --all
+# Interactive terminal UI to review mutants
+mutmut browse
+
+# Show/apply a specific mutant by name (mutant names come from `results`/`browse`)
+mutmut show <mutant_name>
+mutmut apply <mutant_name>
 ```
 
-```python
-# mutmut configuration in pyproject.toml
-# [tool.mutmut]
-# paths_to_mutate = "src/"
-# tests_dir = "tests/"
-# runner = "python -m pytest tests/ -x --timeout=30"
+```toml
+# mutmut 3.x configuration in pyproject.toml
+[tool.mutmut]
+source_paths = ["src/"]                          # renamed from paths_to_mutate (deprecated)
+pytest_add_cli_args_test_selection = ["tests/"]  # args that select/deselect tests
+# pytest_add_cli_args = ["-p", "no:some_plugin"] # other pytest CLI args
 ```
+
+> **Version caveat**: mutmut ≤ 2.x used `mutmut run --paths-to-mutate=src/`, `mutmut show --all`, and `[tool.mutmut] paths_to_mutate / tests_dir / runner`. In 3.x those CLI flags and the `runner` option are gone — mutmut drives pytest itself.
 
 ### Test Parallelization (pytest-xdist)
 ```bash
@@ -491,22 +626,57 @@ pytest -n auto --cov=src --cov-report=term-missing
 ```
 
 ```python
-# conftest.py — ensure test isolation for parallel execution
+# conftest.py — ensure test isolation for parallel execution (pytest-xdist)
 import pytest
-import uuid
-from sqlalchemy import text
+from sqlalchemy import event, text
 
-@pytest.fixture(autouse=True)
-def unique_schema(db_engine):
-    """Each worker gets its own schema to avoid conflicts."""
-    schema_name = f"test_{uuid.uuid4().hex[:8]}"
+# Fallback worker_id when pytest-xdist is not installed — xdist provides
+# its own worker_id fixture ("gw0", "gw1", …) only when running with -n.
+try:
+    import xdist  # noqa: F401
+except ImportError:
+    @pytest.fixture(scope="session")
+    def worker_id():
+        """Fallback when pytest-xdist is not installed."""
+        return "master"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def worker_schema(db_engine, worker_id):
+    """Each xdist worker gets its own Postgres schema to avoid conflicts.
+
+    search_path is PER-CONNECTION: running SET on one pooled connection
+    that goes back to the pool before the test runs isolates nothing —
+    the test's session uses a different connection. Instead, apply it to
+    EVERY DBAPI connection the engine opens via a "connect" event listener.
+    Create the tables inside the worker schema too (e.g. re-run migrations
+    once the listener below is active, or use schema-qualified metadata) —
+    an empty schema isolates nothing.
+    """
+    suffix = "main" if worker_id == "master" else worker_id
+    schema_name = f"test_{suffix}"
+
     with db_engine.connect() as conn:
-        conn.execute(text(f"CREATE SCHEMA {schema_name}"))
-        conn.execute(text(f"SET search_path TO {schema_name}"))
+        conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
         conn.commit()
+
+    @event.listens_for(db_engine, "connect")
+    def _set_search_path(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute(f'SET search_path TO "{schema_name}"')
+        cursor.close()
+
+    # IMPORTANT: dispose pooled connections immediately after registering
+    # the listener.  Pre-existing pooled connections were created BEFORE
+    # the listener was attached — they still use the default search_path
+    # and would leak across workers.  dispose() forces all future
+    # connections to go through the "connect" event.
+    db_engine.dispose()
+
     yield schema_name
+
     with db_engine.connect() as conn:
-        conn.execute(text(f"DROP SCHEMA {schema_name} CASCADE"))
+        conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
         conn.commit()
 ```
 
@@ -538,7 +708,7 @@ def unique_schema(db_engine):
 
 ## Context7 Integration
 
-When working with testing patterns, verify against current documentation:
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
@@ -547,5 +717,3 @@ When working with testing patterns, verify against current documentation:
 | Hypothesis | (query "Hypothesis Python") | Property-based testing |
 | Testcontainers | (query "Testcontainers") | Integration test infrastructure |
 | Vitest | `/vitest-dev/vitest` | JS/TS testing |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs` to get current examples.

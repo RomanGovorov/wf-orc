@@ -95,9 +95,12 @@ GET    /api/getUserOrders?id=123
 #### Pattern 2: Pagination and Filtering
 
 ```python
-from fastapi import FastAPI, Query, Depends
-from pydantic import BaseModel
+import base64
+import json
 from typing import Optional
+
+from fastapi import FastAPI, Query
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -117,12 +120,37 @@ class PaginatedResponse[T](BaseModel):
         return self.page > 1
 
 class UserCursorResponse(BaseModel):
-    """Cursor-based pagination (recommended for large datasets)."""
+    """Cursor-based pagination (recommended for large datasets).
+
+    The cursor is an OPAQUE base64 of the last row's sort-key POSITION
+    (keyset), e.g. {"created_at": ..., "id": ...} — NEVER an offset.
+    Offsets drift when rows are inserted/deleted and force the DB to scan
+    and skip; a keyset cursor is stable and served by an index seek.
+    """
     items: list[dict]
-    next_cursor: Optional[str]  # Base64 encoded offset
+    next_cursor: Optional[str]  # base64 keyset position — opaque to clients
     has_more: bool
 
-@app.get("/api/users", response_model=PaginatedResponse)
+def encode_cursor(created_at: str, id_: str) -> str:
+    """Cursor = base64 of the sort-key position (keyset), NOT an offset."""
+    payload = json.dumps({"created_at": created_at, "id": id_})
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+def decode_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode())
+        data = json.loads(decoded)
+        return data["created_at"], data["id"]
+    except (ValueError, KeyError, json.JSONDecodeError):
+        raise HTTPException(400, detail={"error": "InvalidCursor"})
+
+class UserRead(BaseModel):
+    id: int
+    email: str
+    name: str
+    status: str = "active"
+
+@app.get("/api/users", response_model=PaginatedResponse[UserRead])
 async def list_users(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -153,6 +181,30 @@ async def list_users(
         page_size=page_size,
         pages=pages
     )
+
+@app.get("/api/users/cursor", response_model=UserCursorResponse)
+async def list_users_cursor(
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    cursor: Optional[str] = Query(None, description="Opaque cursor from next_cursor"),
+):
+    """
+    List users with cursor (keyset) pagination.
+
+    Fetch limit+1 rows to compute has_more without COUNT(*):
+      WHERE (created_at, id) > (:c_ts, :c_id)  -- keyset seek; omit on first page
+      ORDER BY created_at, id
+      LIMIT :limit_plus_one
+    """
+    after = decode_cursor(cursor) if cursor else None
+    rows = await fetch_users_keyset(after=after, limit=limit + 1)
+
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    next_cursor = (
+        encode_cursor(items[-1]["created_at"], items[-1]["id"])
+        if has_more and items else None
+    )
+    return UserCursorResponse(items=items, next_cursor=next_cursor, has_more=has_more)
 ```
 
 **Pagination Strategy Matrix:**
@@ -160,27 +212,29 @@ async def list_users(
 | Strategy | When to Use | Example |
 |---|---|---|
 | Offset/Limit | Simple lists, pagination UI | `?page=2&page_size=20` |
-| Cursor-based | Large datasets, infinite scroll | `?cursor=eyJpZCI6MTAwfQ` |
-| Keyset | High performance | `?after_id=42&limit=20` |
+| Cursor (keyset-encoded) | Large datasets, infinite scroll, high performance | `?cursor=eyJjcmVhdGVkX2F0IjoiLi4uIiwiaWQiOi4uLn0` |
 
 #### Pattern 3: Error Handling and Status Codes
 
 ```python
-from fastapi import HTTPException, status
+from typing import Optional
+
+from fastapi import HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from datetime import datetime, timezone
 
 class ErrorResponse(BaseModel):
     error: str               # Machine-readable code
     message: str             # Human-readable description
-    details: Optional[dict]  # Additional context
+    details: Optional[dict] = None  # Additional context (default None so callers can omit)
     timestamp: str
     path: str
 
 class ValidationErrorDetail(BaseModel):
     field: str
     message: str
-    value: Optional[str]
+    value: str | int | bool | list | None = None
 
 class ValidationErrorResponse(BaseModel):
     error: str = "ValidationError"
@@ -207,6 +261,32 @@ STATUS_CODES = {
     "service_unavailable": 503
 }
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Unwrap HTTPException.detail so the wire format matches the documented schema.
+
+    FastAPI's default handler wraps `detail` in `{"detail": ...}`, but our
+    `responses={409: {"model": ErrorResponse}}` documents top-level fields.
+    This handler returns the detail dict directly so the wire format matches.
+    """
+    if isinstance(exc.detail, dict):
+        body = dict(exc.detail)  # copy to avoid mutating the original
+        body.setdefault("details", None)
+        body.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        body.setdefault("path", str(request.url))
+        return JSONResponse(status_code=exc.status_code, content=body)
+    # Plain string detail (e.g., FastAPI's built-in 404 for unknown routes)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": "HTTPException",
+            "message": str(exc.detail),
+            "details": None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url),
+        },
+    )
+
 def raise_not_found(resource: str, resource_id: str):
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -231,19 +311,20 @@ def raise_validation_error(errors: list[ValidationErrorDetail], path: str):
         }
     )
 
-def raise_conflict(message: str, path: str = ""):
+def raise_conflict(message: str, path: str = "", details: dict | None = None):
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail={
             "error": "Conflict",
             "message": message,
+            "details": details,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "path": path,
         }
     )
 
 # FastAPI automatically serializes errors in Pydantic validation
-@app.post("/api/users", response_model=UserResponse,
+@app.post("/api/users", response_model=UserRead,
           responses={
               409: {"model": ErrorResponse, "description": "Email already exists"},
               422: {"model": ValidationErrorResponse, "description": "Validation error"}
@@ -262,7 +343,7 @@ async def create_user(data: UserCreate):
 | 200 | Successful GET/PUT/PATCH/DELETE |
 | 201 | Successful POST (resource created) |
 | 204 | DELETE with no response body |
-| 400 | Bad request — malformed data failed Pydantic validation |
+| 400 | Bad request — malformed request itself: invalid JSON syntax, wrong Content-Type, unparseable payload |
 | 401 | Not authenticated — no token or token expired |
 | 403 | Forbidden — no permission for this resource |
 | 404 | Not found — resource does not exist |
@@ -285,7 +366,7 @@ async def create_user(data: UserCreate):
 # /api/users?version=1
 
 # ✅ GOOD: URL versioning with FastAPI
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 # Version 1 — existing
 v1_router = APIRouter(prefix="/api/v1")
@@ -304,8 +385,9 @@ app.include_router(v2_router)
 async def add_deprecation_headers(request: Request, call_next):
     response = await call_next(request)
     if "/api/v1/" in request.url.path:
-        response.headers["Sunset"] = "2026-12-31T23:59:59Z"
-        response.headers["Deprecation"] = "true"
+        # RFC 8594 (Sunset) uses HTTP-date; RFC 9745 (Deprecation) uses Structured Field Date (@ + Unix epoch per RFC 9651 §3.3.7)
+        response.headers["Sunset"] = "Sat, 31 Dec 2026 23:59:59 GMT"
+        response.headers["Deprecation"] = "@1798761599"
     return response
 ```
 
@@ -318,23 +400,28 @@ async def add_deprecation_headers(request: Request, call_next):
 #### Pattern 5: Idempotency for POST
 
 ```python
-from fastapi import Header, HTTPException
+from typing import Optional
 import hashlib
 import json
 
-class IdempotencyStore:
-    """Store idempotency keys and their responses."""
+import redis.asyncio as redis
+from fastapi import Depends, Header, HTTPException, Request
 
-    def __init__(self):
-        self._store: dict[str, dict] = {}  # In production, use Redis/DB
+# Idempotency requires ATOMICITY (Redis SET NX or DB transaction).
+# In-memory dict is NOT safe — concurrent retries on a timed-out POST /payments
+# will both pass the `if key not in store:` check and double-charge the customer.
+# Use Redis for production; the in-memory stub below is labeled for tests only.
 
-    def check(self, key: str) -> Optional[dict]:
-        return self._store.get(key)
+redis_client: redis.Redis = redis.from_url("redis://localhost:6379")
+IDEMPOTENCY_TTL = 24 * 60 * 60  # 24 hours
 
-    def store(self, key: str, response: dict):
-        self._store[key] = response
+def _scope_key(user_id: str, key: str) -> str:
+    """Scope keys per authenticated user to prevent cross-tenant collision."""
+    return f"idempotency:{user_id}:{key}"
 
-idempotency_store = IdempotencyStore()
+def _payload_hash(payload: dict) -> str:
+    """Deterministic hash of the request payload — same input → same hash."""
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
 
 async def get_idempotency_key(
     idempotency_key: str = Header(None, alias="Idempotency-Key")
@@ -343,26 +430,48 @@ async def get_idempotency_key(
 
 @app.post("/api/payments")
 async def create_payment(
+    request: Request,
     data: PaymentCreate,
-    idempotency_key: Optional[str] = Depends(get_idempotency_key)
+    idempotency_key: Optional[str] = Depends(get_idempotency_key),
 ):
     if not idempotency_key:
-        raise HTTPException(
-            status_code=400,
-            detail={"error": "IdempotencyKeyRequired"}
-        )
+        raise HTTPException(status_code=400, detail={"error": "IdempotencyKeyRequired"})
 
-    # Check if key already exists
-    existing = idempotency_store.check(idempotency_key)
-    if existing:
-        return existing  # Return cached response
+    user_id = request.state.user_id  # set by auth middleware
+    scoped = _scope_key(user_id, idempotency_key)
+    payload_hash = _payload_hash(data.model_dump())
+    entry = f"{payload_hash}|pending"  # or "complete|<json>"
 
-    # Process payment
-    result = await process_payment_impl(data)
+    # ATOMIC claim: SET NX fails if the key already exists (another request claimed it).
+    acquired = await redis_client.set(scoped, entry, nx=True, ex=IDEMPOTENCY_TTL)
+    if not acquired:
+        existing = await redis_client.get(scoped)
+        existing_hash, status = existing.split("|", 1)
+        if existing_hash != payload_hash:
+            # Same key, different payload → caller bug; do NOT return cached response.
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "IdempotencyKeyReuseWithDifferentPayload"},
+            )
+        if status == "pending":
+            # Another request is still processing; tell client to retry.
+            raise HTTPException(status_code=409, detail={"error": "IdempotencyKeyInProgress"})
+        # status == "complete" → return cached response body.
+        return json.loads(status.split(":", 1)[1]) if status.startswith("complete:") else None
 
-    # Cache response
-    idempotency_store.store(idempotency_key, result)
+    try:
+        result = await process_payment_impl(data)
+    except Exception:
+        # Release the key so the caller can retry.
+        await redis_client.delete(scoped)
+        raise
 
+    # Mark complete with the response body.
+    await redis_client.set(
+        scoped,
+        f"{payload_hash}|complete:{json.dumps(result)}",
+        ex=IDEMPOTENCY_TTL,
+    )
     return result
 ```
 
@@ -479,7 +588,7 @@ import { validate } from '../middleware/validate';
 const router = Router();
 
 const CreateUserSchema = z.object({
-  email: z.string().email(),
+  email: z.email(), // Zod 4 top-level format check (Zod 3 codebases: z.string().email())
   name: z.string().min(1).max(100),
 });
 
@@ -492,18 +601,22 @@ const PaginationSchema = z.object({
 // List with cursor-based pagination
 router.get('/users', validate({ query: PaginationSchema }), async (req, res) => {
   const { page, limit, cursor } = req.query;
+  const take = Number(limit) + 1; // fetch one extra to detect hasMore without a COUNT
   const users = await db.user.findMany({
-    take: limit,
-    skip: cursor ? undefined : (page - 1) * limit,
-    cursor: cursor ? { id: cursor } : undefined,
+    take,
+    skip: cursor ? 1 : undefined, // Prisma cursor is inclusive — skip the boundary row to avoid returning it twice
+    cursor: cursor ? { id: String(cursor) } : undefined,
     orderBy: { createdAt: 'desc' },
   });
 
+  const hasMore = users.length > Number(limit);
+  const items = users.slice(0, Number(limit));
+
   res.json({
-    data: users,
+    data: items,
     pagination: {
-      nextCursor: users.length === limit ? users[users.length - 1].id : null,
-      hasMore: users.length === limit,
+      nextCursor: hasMore && items.length > 0 ? items[items.length - 1].id : null,
+      hasMore,
     },
   });
 });
@@ -545,28 +658,52 @@ const errorHandler = (err: Error, req: Request, res: Response, next: NextFunctio
 
 ### Webhook Design
 ```python
-import os
-import hmac
+import asyncio
 import hashlib
+import hmac
 import json
+import logging
+import os
 import uuid
 
 from fastapi import FastAPI, Request, HTTPException
 import httpx
-import asyncio
 
 app = FastAPI()
 
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
+logger = logging.getLogger(__name__)
+
+class WebhookDeliveryError(Exception):
+    """Raised when a webhook could not be delivered after all retries."""
+
+# Permanent 4xx statuses that should NOT be retried — the receiver will never
+# accept this event. Retrying these wastes quota and delays the dead-letter queue.
+_RETRYABLE_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+
 # Webhook sender
-async def send_webhook(url: str, payload: dict, secret: str):
-    """Send webhook with HMAC signature and retry logic."""
+async def send_webhook(url: str, payload: dict, secret: str, max_attempts: int = 3):
+    """Send webhook with HMAC signature and retry logic.
+
+    Design choice: on final failure LOG and RAISE WebhookDeliveryError —
+    silently returning None loses events (webhook delivery is usually
+    contractual). The caller must handle it: dead-letter queue, alert, or a
+    scheduled re-delivery job.
+
+    Retries use exponential backoff on retryable failures (timeouts,
+    connection errors, 408/425/429/5xx responses). Permanent 4xx errors
+    (401, 403, 404, 410, 422, etc.) are dead-lettered immediately —
+    retrying a broken endpoint wastes quota and delays the DLQ.
+    """
     body = json.dumps(payload).encode()
     signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    # Stable across retries so the receiver can dedupe re-delivered events
+    webhook_id = str(uuid.uuid4())
 
+    last_error: Exception | None = None
     async with httpx.AsyncClient(timeout=10) as client:
-        for attempt in range(3):
+        for attempt in range(max_attempts):
             try:
                 resp = await client.post(
                     url,
@@ -575,15 +712,34 @@ async def send_webhook(url: str, payload: dict, secret: str):
                         "Content-Type": "application/json",
                         "X-Webhook-Signature": f"sha256={signature}",
                         "X-Webhook-Event": payload.get("event", "unknown"),
-                        "X-Webhook-ID": str(uuid.uuid4()),
+                        "X-Webhook-ID": webhook_id,
                     },
                 )
                 if resp.status_code < 300:
                     return
-            except httpx.TimeoutException:
-                if attempt == 2:
-                    raise
-                await asyncio.sleep(2 ** attempt)
+                if resp.status_code not in _RETRYABLE_STATUSES:
+                    # Permanent 4xx — dead-letter immediately, no retry
+                    logger.error(
+                        "webhook to %s got permanent HTTP %d — dead-lettering without retry",
+                        url, resp.status_code,
+                    )
+                    raise WebhookDeliveryError(
+                        f"receiver returned permanent error HTTP {resp.status_code}"
+                    )
+                last_error = WebhookDeliveryError(
+                    f"receiver returned HTTP {resp.status_code}"
+                )
+            except httpx.TransportError as exc:  # covers TimeoutException
+                last_error = exc
+            logger.warning(
+                "webhook attempt %d/%d to %s failed: %s",
+                attempt + 1, max_attempts, url, last_error,
+            )
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(2 ** attempt)  # backoff before EVERY retry
+    raise WebhookDeliveryError(
+        f"webhook to {url} failed after {max_attempts} attempts"
+    ) from last_error
 
 # Webhook receiver — verify signature
 @app.post("/webhooks")
@@ -606,7 +762,9 @@ async def receive_webhook(request: Request):
 
 ### Long-Running Operations (202 Accepted)
 ```python
-from fastapi import FastAPI, BackgroundTasks
+import uuid
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
 class ExportRequest(BaseModel):
@@ -630,7 +788,10 @@ async def create_export(req: ExportRequest, bg: BackgroundTasks):
 
 @app.get("/exports/{export_id}")
 async def get_export_status(export_id: str):
-    status = await get_export_status(export_id)
+    # Read from the same store the background task WRITES to
+    # (store_export_status / EXPORTS). The storage lookup has a distinct
+    # name — calling get_export_status here would be infinite recursion.
+    status = await load_export_status(export_id)
     if not status:
         raise HTTPException(404, "Export not found")
     return status
@@ -653,34 +814,48 @@ async def client():
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
+@pytest_asyncio.fixture(autouse=True)
+async def clean_store():
+    """Truncate the user store before each test — tests must not share state."""
+    await truncate_users()
+    yield
+
 @pytest.mark.asyncio
 async def test_create_and_get_user(client):
-    # Create
-    resp = await client.post("/users", json={"email": "test@example.com", "name": "Test"})
+    # Create — use the same /api/users path as the real endpoints
+    resp = await client.post("/api/users", json={"email": "test@example.com", "name": "Test"})
     assert resp.status_code == 201
     user_id = resp.json()["id"]
 
     # Get
-    resp = await client.get(f"/users/{user_id}")
+    resp = await client.get(f"/api/users/{user_id}")
     assert resp.status_code == 200
     assert resp.json()["email"] == "test@example.com"
 
 @pytest.mark.asyncio
 async def test_pagination(client):
-    # Create 25 users
+    # Create 25 users (clean_store ensures isolation from other tests)
     for i in range(25):
-        await client.post("/users", json={"email": f"user{i}@test.com", "name": f"User {i}"})
+        await client.post("/api/users", json={"email": f"user{i}@test.com", "name": f"User {i}"})
 
-    # First page
-    resp = await client.get("/users?limit=10")
+    # First page — the cursor endpoint documented in Pattern 2
+    resp = await client.get("/api/users/cursor?limit=10")
     data = resp.json()
-    assert len(data["items"]) == 10
-    assert data["total"] == 25
+    assert len(data["items"]) >= 10  # use >= so leftover rows don't break the assertion
+    assert data["has_more"] is True
     cursor = data["next_cursor"]
 
-    # Second page
-    resp = await client.get(f"/users?limit=10&cursor={cursor}")
-    assert len(resp.json()["items"]) == 10
+    # Second page — send the opaque cursor back verbatim
+    resp = await client.get(f"/api/users/cursor?limit=10&cursor={cursor}")
+    data = resp.json()
+    assert len(data["items"]) >= 10
+    assert data["has_more"] is True
+
+    # Third page — remaining rows (exactly 5 with a clean store)
+    resp = await client.get(f"/api/users/cursor?limit=10&cursor={data['next_cursor']}")
+    data = resp.json()
+    assert len(data["items"]) >= 1
+    assert data["has_more"] is False or data.get("next_cursor") is None
 ```
 
 > **See also**: `python-professional` — FastAPI dependency injection, middleware, lifespan patterns. `performance-optimization` — N+1 query prevention, caching strategies, connection pooling.
@@ -713,7 +888,7 @@ async def test_pagination(client):
 
 ## Context7 Integration
 
-When working with API patterns, verify against current documentation:
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
@@ -722,5 +897,3 @@ When working with API patterns, verify against current documentation:
 | OpenAPI | (query "OpenAPI Specification") | Schema definition |
 | GraphQL | (query "GraphQL") | Schema design, resolvers |
 | Zod | `/colinhacks/zod` | Runtime validation |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs` to get current examples.

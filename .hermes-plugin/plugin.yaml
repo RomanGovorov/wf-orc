@@ -1,4 +1,16 @@
 name: wf-orc
-version: 0.5.4
+version: 0.6.0
 description: Multi-agent development workflow orchestrator with 12 specialized agents
-author: Roman Govorov
+author:
+  name: Roman Govorov
+  email: rsgovorov@gmail.com
+license: MIT
+homepage: https://github.com/RomanGovorov/wf-orc
+repository: https://github.com/RomanGovorov/wf-orc
+keywords:
+  - workflow
+  - orchestration
+  - multi-agent
+  - development
+  - automation
+skills: ./skills/

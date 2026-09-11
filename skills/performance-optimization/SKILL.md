@@ -116,14 +116,23 @@ async def perf_tracking(request: Request, call_next):
 ### Pattern 2: Database Query Optimization
 
 ```python
-# SQLAlchemy — EXPLAIN ANALYZE for query plan analysis
-from sqlalchemy import text
+# SQLAlchemy — EXPLAIN for query plan analysis (SELECT only, bind params preserved)
+#
+# ⚠️ NEVER use EXPLAIN ANALYZE on UPDATE/DELETE: ANALYZE actually EXECUTES the
+#    statement — on a write it mutates production data. Plain EXPLAIN only plans.
+#    (Even on SELECT, ANALYZE runs the query — use it deliberately.)
+# ⚠️ Never inline values into raw SQL (literal_binds + f-string = SQL-injection
+#    surface): keep bind parameters as parameters.
+from sqlalchemy import Select, text
 
 def analyze_query(session, stmt):
-    """Get query execution plan for optimization."""
-    query_text = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-    result = session.execute(text(f"EXPLAIN ANALYZE {query_text}"))
-    return "\n".join(row[0] for row in result)
+    """Get query execution plan for optimization (SELECT statements only)."""
+    if not isinstance(stmt, Select):
+        raise TypeError("Only SELECT statements can be safely explained")
+
+    sql = str(stmt)  # renders with named :bind placeholders — values stay separate
+    result = session.execute(text(f"EXPLAIN {sql}"), stmt.compile().params)
+    return "\n".join(str(row[0]) for row in result)
 ```
 
 > **See also**: `database-patterns` — Connection pooling, N+1 prevention, indexing strategies, CQRS pattern.
@@ -182,7 +191,7 @@ class RedisCache:
             return json.loads(data)
         return None
 
-    def set(self, key: str, value: Any, ttl: int = None):
+    def set(self, key: str, value: Any, ttl: int | None = None):
         self.redis.setex(
             key,
             ttl or self.default_ttl,
@@ -223,8 +232,6 @@ def update_user(user_id: str, data: dict):
 | Write-Behind | High write volume | Faster writes | Risk of data loss |
 | Refresh-Ahead | Predictable access | No cache miss latency | Wasted refreshes |
 
-> **See also**: `database-patterns` — Connection pooling, N+1 prevention, indexing strategies, CQRS pattern.
-
 ### Pattern 4: Async Optimization
 
 ```python
@@ -236,7 +243,9 @@ async def get_dashboard():
     return {"user": user, "orders": orders, "notifications": notifications}
     # Total: 300ms
 
-# ✅ GOOD: Parallel async — gather
+# ✅ GOOD: Parallel async — asyncio.gather is fine for simple fan-out like this.
+# Prefer asyncio.TaskGroup when you need cancellation safety — see
+# "Structured Concurrency (Python 3.11+ TaskGroup)" below.
 async def get_dashboard():
     user, orders, notifications = await asyncio.gather(
         get_user_data(),
@@ -274,7 +283,7 @@ async def process_data():
     return result
 ```
 
-### Pattern 6: Batch Processing
+### Pattern 5: Batch Processing
 
 ```python
 # ❌ BAD: One-by-one insertion
@@ -295,45 +304,50 @@ session.execute(insert(Item), large_dataset)
 session.commit()
 ```
 
-### Pattern 7: Memory Optimization
+### Pattern 6: Memory Optimization
 
 ```python
 # ❌ BAD: Load all into memory
-all_users = session.execute(select(User)).scalars().all()  # 1 million users → OOM
-for user in all_users:
-    process(user)
+async def export_all(session: AsyncSession):
+    all_users = (await session.execute(select(User))).scalars().all()  # 1M users → OOM
+    for user in all_users:
+        process(user)
 
-# ✅ GOOD: Yield results — generator
-def fetch_users_batched(session, batch_size=1000):
-    """Stream results in batches — constant memory."""
-    offset = 0
+# ✅ GOOD: Keyset (seek) batching — constant memory, async end-to-end.
+# NEVER use LIMIT/OFFSET for deep pages: skipping N rows costs O(N) per page
+# (O(N²) overall) and rows shift under concurrent writes (skips/duplicates).
+# Keyset pagination filters on the last-seen sort key instead — stable and
+# index-friendly.
+async def fetch_users_keyset(session: AsyncSession, batch_size: int = 1000):
+    """Stream users in batches using keyset pagination (async generator)."""
+    last_id = 0
     while True:
-        batch = (
-            session.execute(
-                select(User)
-                .order_by(User.id)
-                .limit(batch_size)
-                .offset(offset)
-            )
-            .scalars()
-            .all()
+        result = await session.execute(
+            select(User)
+            .where(User.id > last_id)   # seek past the previous batch
+            .order_by(User.id)
+            .limit(batch_size)
         )
+        batch = result.scalars().all()
         if not batch:
             break
-        yield from batch
-        offset += batch_size
+        for user in batch:
+            yield user
+        last_id = batch[-1].id
 
-# ✅ GOOD: Streaming response for large datasets
+# ✅ GOOD: Streaming response for large datasets — async iteration only;
+# a sync DB call inside an async generator blocks the event loop per batch
+# (if you must keep a sync session, wrap the fetch in run_in_executor)
 from fastapi.responses import StreamingResponse
 
-async def user_iterator():
-    for user in fetch_users_batched(session):
+async def user_iterator(session: AsyncSession):
+    async for user in fetch_users_keyset(session):
         yield json.dumps(user.to_dict()) + "\n"
 
 @app.get("/api/users/export")
-async def export_users():
+async def export_users(session: AsyncSession = Depends(get_db_read)):
     return StreamingResponse(
-        user_iterator(),
+        user_iterator(session),
         media_type="application/x-ndjson"
     )
 ```
@@ -368,7 +382,7 @@ with memray.Tracker("memory_profile.bin"):
 # $ memray table memory_profile.bin       — allocation table
 ```
 
-### Pattern 8: API Response Optimization
+### Pattern 7: API Response Optimization
 
 ```python
 # Response compression
@@ -376,25 +390,25 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress >1KB
 
-# Field selection — GraphQL style for REST
-@app.get("/api/users/{user_id}")
-async def get_user(user_id: str, fields: str | None = None):
-    user = await fetch_user(user_id)
-
-    if fields:
-        requested = fields.split(",")
-        return {k: v for k, v in user.items() if k in requested}
-
-    return user
-
-# ETag / conditional requests
-from fastapi import Request
+# Field selection + ETag / conditional requests — ONE handler per path.
+# (Registering two @app.get("/api/users/{user_id}") handlers makes the second
+#  unreachable: FastAPI matches routes in registration order.)
 import hashlib
+import json
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 
 @app.get("/api/users/{user_id}")
-async def get_user(user_id: str, request: Request):
+async def get_user(user_id: str, request: Request, fields: str | None = None):
     user = await fetch_user(user_id)
-    etag = hashlib.md5(json.dumps(user).encode()).hexdigest()
+
+    if fields:  # field selection — GraphQL style for REST
+        requested = fields.split(",")
+        user = {k: v for k, v in user.items() if k in requested}
+
+    # RFC 9110: an entity-tag is a QUOTED string — generate, send, and compare
+    # it WITH the quotes (an unquoted ETag header is invalid)
+    etag = f'"{hashlib.md5(json.dumps(user).encode()).hexdigest()}"'
 
     if_none_match = request.headers.get("if-none-match")
     if if_none_match == etag:
@@ -446,14 +460,17 @@ const user = await getCached(`user:${id}`, 300, () => db.user.findById(id));
 ```python
 import asyncio
 
-# ❌ Old — asyncio.gather (tasks leak on cancellation)
-async def fetch_all_old():
+# asyncio.gather — acceptable for SIMPLE fan-out (see Pattern 4), but it is not
+# cancellation-safe: when one coroutine fails, siblings keep running (tasks
+# leak) unless you cancel them yourself, and return_exceptions=True hides errors
+async def fetch_all_gather():
     results = await asyncio.gather(
         fetch_users(), fetch_orders(), fetch_products(),
-        return_exceptions=True  # hides errors
+        return_exceptions=True  # hides errors — you must inspect each result!
     )
 
-# ✅ New — TaskGroup (structured concurrency)
+# ✅ PREFERRED — TaskGroup (structured concurrency, Python 3.11+):
+# use whenever one failure should cancel the siblings
 async def fetch_all():
     async with asyncio.TaskGroup() as tg:
         users_task = tg.create_task(fetch_users())
@@ -483,7 +500,7 @@ async def fetch_batch(urls: list[str], max_concurrent: int = 10):
 | `pyinstrument` | CPU (wall-clock) | <1% | High-level bottlenecks | HTML flame chart |
 | `memray` | Memory | Medium | Memory leaks, allocations | HTML flame graph |
 | `py-spy` | CPU (sampling) | <1% | Production profiling | Speedscope JSON |
-| `Austin` | CPU + Memory | Low | Lightweight sampling | Flame charts |
+| `austin` | CPU (wall-clock) + RSS-delta sampling | Low | Lightweight sampling (memray for allocation-level memory) | Flame charts |
 | `yappi` | CPU + threads | Low | Async/multithreaded | Callgrind format |
 
 ```bash
@@ -497,7 +514,7 @@ py-spy record -o profile.svg --pid $(pgrep python)  # Record flame graph
 ### CDN and Edge Caching
 ```python
 # FastAPI — set cache headers for CDN
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Header, Response
 
 app = FastAPI()
 
@@ -518,7 +535,7 @@ async def get_current_user(response: Response):
 # Cloudflare/CloudFront cache key includes query params
 # Vary header for content negotiation
 @app.get("/api/data")
-async def get_data(accept: str = Header("text/html"), response: Response = None):
+async def get_data(accept: str = Header("text/html"), response: Response | None = None):
     response.headers["Vary"] = "Accept, Accept-Encoding"
     if "application/json" in accept:
         return data_json()
@@ -527,43 +544,57 @@ async def get_data(accept: str = Header("text/html"), response: Response = None)
 
 ### Database Read Replicas
 ```python
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from fastapi import Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
-# Primary (read-write)
-primary_engine = create_engine("postgresql://primary-host/db", pool_size=20)
+# Primary (read-write) — async engine + asyncio driver (asyncpg).
+# NEVER mix a sync sessionmaker with `async def` handlers: sync
+# `db.commit()` returns None (`await None` → TypeError) and sync
+# `db.execute()` blocks the event loop (the Pattern 4 anti-pattern).
+primary_engine = create_async_engine(
+    "postgresql+asyncpg://primary-host/db", pool_size=20
+)
 # Replica (read-only)
-replica_engine = create_engine("postgresql://replica-host/db", pool_size=30, pool_pre_ping=True)
+replica_engine = create_async_engine(
+    "postgresql+asyncpg://replica-host/db", pool_size=30, pool_pre_ping=True
+)
 
-PrimarySession = sessionmaker(bind=primary_engine)
-ReplicaSession = sessionmaker(bind=replica_engine)
+# expire_on_commit=False — keeps attributes accessible after `await commit()`
+PrimarySession = async_sessionmaker(primary_engine, expire_on_commit=False)
+ReplicaSession = async_sessionmaker(replica_engine, expire_on_commit=False)
 
 # Route writes to primary, reads to replica
 class DatabaseRouter:
-    def get_write_session(self):
+    def get_write_session(self) -> AsyncSession:
         return PrimarySession()
 
-    def get_read_session(self):
+    def get_read_session(self) -> AsyncSession:
         return ReplicaSession()
 
-# FastAPI dependencies
-def get_db_write():
-    with PrimarySession() as session:
+# FastAPI dependencies (async generators)
+async def get_db_write():
+    async with PrimarySession() as session:
         yield session
 
-def get_db_read():
-    with ReplicaSession() as session:
+async def get_db_read():
+    async with ReplicaSession() as session:
         yield session
 
 @app.get("/users")
-async def list_users(db=Depends(get_db_read)):  # reads from replica
-    return db.execute(select(User)).scalars().all()
+async def list_users(db: AsyncSession = Depends(get_db_read)):  # reads from replica
+    result = await db.execute(select(User))
+    return result.scalars().all()
 
 @app.post("/users")
-async def create_user(data: UserCreate, db=Depends(get_db_write)):  # writes to primary
+async def create_user(data: UserCreate, db: AsyncSession = Depends(get_db_write)):  # writes to primary
     user = User(**data.model_dump())
     db.add(user)
-    await db.commit()
+    await db.commit()  # AsyncSession.commit() IS awaitable
     return user
 ```
 
@@ -577,7 +608,7 @@ async def create_user(data: UserCreate, db=Depends(get_db_write)):  # writes to 
 4. **Cache read-heavy, rarely-changing data** — user roles, config, catalog
 5. **Batch insert/update** — reduce round trips
 6. **Streaming for large datasets** — constant memory footprint
-7. **async.gather()** for independent I/O operations
+7. **asyncio.TaskGroup** (Python 3.11+) for independent I/O operations — structured concurrency, preferred; **asyncio.gather()** is acceptable for simple fan-out that needs no cancellation safety (see Pattern 4 and "Structured Concurrency")
 8. **Index only frequently-queried columns** — indexes slow down writes
 9. **Set realistic SLOs** — p95 < 500ms, p99 < 1s
 10. **Load test before production** — identify bottlenecks under load
@@ -593,9 +624,9 @@ async def create_user(data: UserCreate, db=Depends(get_db_write)):  # writes to 
 | `time.sleep()` in async | Blocks entire event loop | asyncio.sleep() |
 | Blocking I/O in async function | Serial instead of parallel | httpx, asyncpg, aiosqlite |
 | Cache invalidation missing | Stale data | Invalidate on write, TTL |
-| Fetch all then paginate | OOM | LIMIT/OFFSET, cursor |
+| Fetch all then paginate | OOM | Keyset/cursor batching — never deep LIMIT/OFFSET (see Pattern 6) |
 | Over-indexing | Slows down inserts/updates | Only needed indexes |
-| Missing query plans | Unoptimized query | EXPLAIN ANALYZE |
+| Missing query plans | Unoptimized query | EXPLAIN (never EXPLAIN ANALYZE on writes — ANALYZE executes the statement) |
 
 ### Cache Stampede Prevention Pattern
 
@@ -686,7 +717,7 @@ class StaleWhileRevalidateCache:
 
 ## Context7 Integration
 
-When working with performance patterns, verify against current documentation:
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
@@ -695,5 +726,3 @@ When working with performance patterns, verify against current documentation:
 | Prometheus | (query "Prometheus Python") | Metrics collection |
 | pyinstrument | (query "pyinstrument") | Profiling |
 | memray | (query "memray") | Memory profiling |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs` to get current examples.

@@ -1,10 +1,12 @@
+<!-- AUTO-GENERATED from templates — DO NOT EDIT manually. Regenerate with: python3 scripts/generate_all.py -->
+
 ---
 description: Research workflow — gather requirements, create TZ, estimate costs
 ---
 
 # wf-orc — Research Workflow
 
-**START NOW:** Launch the `business-analyst` agent using the `agent` tool with the task below. Then follow the workflow instructions to completion.
+**START NOW:** Launch the `business-analyst` agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with the task below. Then follow the workflow instructions to completion.
 
 ## User's Task
 
@@ -35,7 +37,7 @@ User Request
 
 **IMMEDIATELY** launch the first agent:
 ```
-agent(subagent_type="business-analyst", prompt="<user's task from above>")
+Launch the first agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with `subagent_type="business-analyst"` and the user's task as prompt.
 ```
 
 The business-analyst will:
@@ -47,7 +49,7 @@ The business-analyst will:
 
 After business-analyst completes, launch architecture-planner:
 ```
-agent(subagent_type="architecture-planner", prompt="Create preliminary architecture and cost estimation based on TZ at docs/requirements/TZ-*.md and context at docs/context/")
+Launch architecture-planner with `subagent_type="architecture-planner"` and prompt to create preliminary architecture and cost estimation based on TZ at docs/requirements/TZ-*.md and context at docs/context/
 ```
 
 The architecture-planner will:
@@ -69,6 +71,6 @@ After architecture-planner completes, compile and return results to user:
 ## Key Rules
 
 1. **Read `workflow.yaml`** for agent definitions
-2. **Launch agents** via `agent` tool with `subagent_type` = agent name
-3. **User questions**: Agents may ask questions via `ask_user_question` — relay to user
+2. **Launch agents** via the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with `subagent_type` = agent name
+3. **User questions**: sub-agents CANNOT ask the user directly on either platform. Relay `needs_user_input: true` results: ask the user from the main session (`AskUserQuestion` in Claude Code, `ask_user_question` in Qwen Code), then re-launch the agent with answers. For business-analyst, `task_type: "research"` must be present in every result
 4. **Research only**: This workflow does NOT proceed to implementation

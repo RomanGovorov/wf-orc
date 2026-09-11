@@ -64,11 +64,12 @@ Complete guide to professional JS/TS development — TypeScript 5.x strict mode,
 
 Maximum type safety for production applications.
 
-```typescript
+```jsonc
 // tsconfig.json — strict configuration
 {
   "compilerOptions": {
-    "target": "ES2022",
+    // target/lib are a deployment choice — ES2024 matches this skill's baseline (Node.js 22+)
+    "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
@@ -141,10 +142,12 @@ function handleResponse(response: ApiResponse<User>): string {
       return response.retryable
         ? `Error: ${response.message} (will retry)`
         : `Fatal: ${response.message}`;
+    default:
+      // Exhaustiveness check belongs in default: — adding a new union
+      // member without a case makes this a compile error (response is
+      // not never), and impossible runtime data throws here
+      return assertNever(response);
   }
-  // TypeScript knows this is unreachable — exhaustive check
-  const _exhaustive: never = response;
-  return _exhaustive;
 }
 
 // Exhaustive check helper
@@ -206,10 +209,17 @@ interface Repository<T extends Identifiable> {
 }
 
 // Concrete implementation
+import type { Pool } from "pg";
+
 class UserPostgresRepository implements Repository<User> {
+  constructor(private readonly pool: Pool) {}
+
   async findById(id: number): Promise<User | undefined> {
-    const row = await this.pool.query("SELECT * FROM users WHERE id = $1", [id]);
-    return row.rows[0];
+    const result = await this.pool.query<User>("SELECT * FROM users WHERE id = $1", [id]);
+    // With noUncheckedIndexedAccess, rows[0] is User | undefined — guard it
+    const row = result.rows[0];
+    if (!row) return undefined;
+    return row;
   }
   // ... other methods
 }
@@ -227,7 +237,7 @@ import { z } from "zod";
 // Define schema
 const UserSchema = z.object({
   id: z.number().int().positive(),
-  email: z.string().email(),
+  email: z.email(), // Zod 4 top-level format check (Zod 3 codebases: z.string().email())
   name: z.string().min(1).max(100),
   role: z.enum(["admin", "user", "moderator"]),
   preferences: z.object({
@@ -250,9 +260,10 @@ type CreateUser = z.infer<typeof CreateUserSchema>;
 function validateUser(input: unknown): User {
   const result = UserSchema.safeParse(input);
   if (!result.success) {
-    const formatted = result.error.format();
-    // formatted.email?._errors → ["Invalid email"]
-    throw new ValidationError("User validation failed", formatted);
+    // Zod v4: use result.error.flatten() (z.error.format() is still supported)
+    const flattened = result.error.flatten();
+    // flattened.fieldErrors.email → ["Invalid email"]
+    throw new ValidationError("User validation failed", flattened.fieldErrors ?? {});
   }
   return result.data;
 }
@@ -425,12 +436,12 @@ Modern module system for Node.js and browsers.
   "main": "./dist/index.js",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./utils": {
-      "import": "./dist/utils/index.js",
-      "types": "./dist/utils/index.d.ts"
+      "types": "./dist/utils/index.d.ts",
+      "import": "./dist/utils/index.js"
     }
   },
   "engines": {
@@ -507,11 +518,13 @@ if (result.ok) {
 
 // Custom error hierarchy
 class AppError extends Error {
+  // Canonical signature: (statusCode, code, message, details) — consistent
+  // with the api-design-principles skill's AppError and error-handler wire format.
   constructor(
-    message: string,
+    public readonly statusCode: number,
     public readonly code: string,
-    public readonly statusCode: number = 500,
-    public readonly cause?: Error,
+    message: string,
+    public readonly details?: Record<string, string[]>,
   ) {
     super(message);
     this.name = this.constructor.name;
@@ -521,7 +534,7 @@ class AppError extends Error {
 
 class NotFoundError extends AppError {
   constructor(message: string) {
-    super(message, "NOT_FOUND", 404);
+    super(404, "NOT_FOUND", message);
   }
 }
 
@@ -530,21 +543,25 @@ class ValidationError extends AppError {
     message: string,
     public readonly fields: Record<string, string[]>,
   ) {
-    super(message, "VALIDATION_ERROR", 422);
+    // Pass fields as the canonical `details` parameter so error-handler wire format is uniform.
+    super(422, "VALIDATION_ERROR", message, fields);
   }
 }
 
 class AuthenticationError extends AppError {
   constructor(message: string = "Authentication required") {
-    super(message, "UNAUTHORIZED", 401);
+    super(401, "UNAUTHORIZED", message);
   }
 }
 
-// Error handler middleware (Express/Fastify)
-function errorHandler(error: Error, _req: Request, res: Response): void {
+// Express error handler — MUST declare all 4 args (err, req, res, next):
+// Express recognizes error middleware ONLY by its 4-parameter arity.
+import type { Request, Response, NextFunction } from 'express';
+
+function errorHandler(error: Error, _req: Request, res: Response, _next: NextFunction): void {
   if (error instanceof AppError) {
     res.status(error.statusCode).json({
-      error: { code: error.code, message: error.message },
+      error: { code: error.code, message: error.message, details: error.details ?? {} },
     });
     return;
   }
@@ -555,6 +572,23 @@ function errorHandler(error: Error, _req: Request, res: Response): void {
     error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred" },
   });
 }
+// app.use(errorHandler) — register AFTER all routes/middleware
+
+// Fastify has NO middleware — register an error handler instead
+// (callback args: error: Error, request: FastifyRequest, reply: FastifyReply)
+fastifyApp.setErrorHandler((error, request, reply) => {
+  if (error instanceof AppError) {
+    reply.status(error.statusCode).send({
+      error: { code: error.code, message: error.message, details: error.details ?? {} },
+    });
+    return;
+  }
+
+  request.log.error({ err: error }, "Unhandled error"); // don't leak internals
+  reply.status(500).send({
+    error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred" },
+  });
+});
 ```
 
 ---
@@ -565,18 +599,19 @@ Process large data efficiently without loading everything into memory.
 
 ```typescript
 import { createReadStream, createWriteStream } from "node:fs";
-import { Transform } from "node:stream";
+import { Transform, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 
 // Transform stream — process data chunk by chunk
 class JsonLineParser extends Transform {
+  private _buffer = ""; // declared field — required in strict mode
+
   constructor() {
     super({ objectMode: true });
-    this._buffer = "";
   }
 
-  override _transform(chunk: Buffer, _encoding: string, callback: () => void): void {
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
     this._buffer += chunk.toString();
     const lines = this._buffer.split("\n");
     this._buffer = lines.pop() ?? "";
@@ -593,7 +628,7 @@ class JsonLineParser extends Transform {
     callback();
   }
 
-  override _flush(callback: () => void): void {
+  override _flush(callback: TransformCallback): void {
     if (this._buffer.trim()) {
       try {
         this.push(JSON.parse(this._buffer));
@@ -624,7 +659,7 @@ async function processLargeFile(input: string, output: string): Promise<void> {
   );
 }
 
-// Web Streams API (Node.js 22+)
+// Web Streams API — global fetch/web streams available unflagged since Node.js 18, stable since Node.js 21
 async function streamResponse(url: string): Promise<void> {
   const response = await fetch(url);
   if (!response.body) throw new Error("No response body");
@@ -649,7 +684,6 @@ Server-first component architecture with Next.js App Router.
 ```tsx
 // app/users/page.tsx — Server Component (default)
 // Runs on server, zero client JS, can access DB directly
-import { db } from "@/lib/db";
 import { UserList } from "./UserList";
 import { Suspense } from "react";
 
@@ -674,7 +708,7 @@ export default async function UsersPage({ searchParams }: UsersPageProps) {
 // app/users/UserList.tsx — Server Component with data access
 import { db } from "@/lib/db";
 
-async function UserList({ query, offset }: { query: string; offset: number }) {
+export async function UserList({ query, offset }: { query: string; offset: number }) {
   // Direct database access — no API layer needed
   const users = await db.users.findMany({
     where: query ? { name: { contains: query } } : undefined,
@@ -770,20 +804,30 @@ export default defineConfig({
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { UserService } from "@/services/user-service";
 import type { UserRepository } from "@/repositories/user-repository";
+import type { EmailService } from "@/services/email-service";
 
 describe("UserService.create", () => {
   let service: UserService;
   let mockRepo: UserRepository;
+  let mockEmailService: EmailService;
 
   beforeEach(() => {
+    // Type each vi.fn() with the exact method signature from the interface —
+    // avoids the `as unknown as T` double-cast that bypasses type checking and
+    // breaks `tsc --noEmit`.
     mockRepo = {
-      findById: vi.fn(),
-      findByEmail: vi.fn(),
-      create: vi.fn(),
-      update: vi.fn(),
-      delete: vi.fn(),
-    };
-    service = new UserService(mockRepo);
+      findById: vi.fn<UserRepository["findById"]>(),
+      findByEmail: vi.fn<UserRepository["findByEmail"]>(),
+      create: vi.fn<UserRepository["create"]>(),
+      update: vi.fn<UserRepository["update"]>(),
+      delete: vi.fn<UserRepository["delete"]>(),
+    } as UserRepository;
+    mockEmailService = { sendWelcome: vi.fn<EmailService["sendWelcome"]>() } as EmailService;
+    // UserService takes a deps object (see the DI section below)
+    service = new UserService({
+      userRepository: mockRepo,
+      emailService: mockEmailService,
+    });
   });
 
   it("creates a user with hashed password", async () => {
@@ -798,7 +842,7 @@ describe("UserService.create", () => {
     const result = await service.create({
       email: "test@example.com",
       name: "Test",
-      password: "secure123",
+      password: "secure123456",
     });
 
     expect(result).toMatchObject({
@@ -813,7 +857,7 @@ describe("UserService.create", () => {
     );
     // Ensure raw password is not stored
     expect(mockRepo.create).not.toHaveBeenCalledWith(
-      expect.objectContaining({ password: "secure123" })
+      expect.objectContaining({ password: "secure123456" })
     );
   });
 
@@ -829,7 +873,7 @@ describe("UserService.create", () => {
       service.create({
         email: "existing@example.com",
         name: "Test",
-        password: "secure123",
+        password: "secure123456",
       })
     ).rejects.toThrow("Email already exists");
   });
@@ -841,7 +885,7 @@ describe("UserService.create", () => {
         name: "Test",
         password: "123",
       })
-    ).rejects.toThrow("Password must be at least 8 characters");
+    ).rejects.toThrow("Password must be at least 12 characters");
   });
 });
 ```
@@ -892,6 +936,16 @@ export class UserService {
 
   async create(data: CreateUserInput): Promise<User> {
     const { userRepository, emailService } = this.deps;
+
+    // Password strength — canonical security policy (secure-coding-patterns)
+    // requires min 12 characters; the unit test in the Vitest section asserts
+    // the same threshold.
+    if (data.password.length < 12) {
+      throw new ValidationError("Password must be at least 12 characters", {
+        password: ["Password must be at least 12 characters"],
+      });
+    }
+
     const existing = await userRepository.findByEmail(data.email);
     if (existing) {
       throw new ValidationError("Email already exists", {
@@ -899,9 +953,11 @@ export class UserService {
       });
     }
 
+    // Strip the raw password — never spread `data` into the persisted record
+    const { password: _password, ...safeData } = data;
     const hashedPassword = await hashPassword(data.password);
     const user = await userRepository.create({
-      ...data,
+      ...safeData,
       hashedPassword,
     });
 
@@ -927,6 +983,7 @@ import { vi, describe, it, expect } from "vitest";
 
 describe("UserService with DI", () => {
   it("creates user successfully", async () => {
+    // NOTE: awilix createContainer uses CLASSIC injection mode by default in tests; production container uses PROXY mode.
     const testContainer = createContainer({ strict: true });
     testContainer.register({
       userRepository: asValue({
@@ -941,7 +998,7 @@ describe("UserService with DI", () => {
     const userService = new UserService(testContainer.cradle);
     const user = await userService.create({
       email: "test@test.com",
-      password: "secure123",
+      password: "secure123456",
       name: "Test",
     });
 
@@ -992,10 +1049,21 @@ export function createLogger(context: Record<string, unknown>) {
 ```
 
 ```typescript
-// middleware/request-logger.ts — Express/Fastify middleware
+// middleware/request-logger.ts — Express middleware
+// (Fastify needs no such middleware — request.log is built in)
 import { createLogger } from "@/lib/logger";
 import type { Request, Response, NextFunction } from "express";
+import type { Logger } from "pino";
 import { randomUUID } from "node:crypto";
+
+// Module augmentation — makes req.log type-safe (no `any` casts)
+declare global {
+  namespace Express {
+    interface Request {
+      log: Logger;
+    }
+  }
+}
 
 export function requestLogger(req: Request, res: Response, next: NextFunction) {
   const requestId = (req.headers["x-request-id"] as string) ?? randomUUID();
@@ -1016,8 +1084,8 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
     );
   });
 
-  // Attach logger to request for downstream use
-  (req as any).log = log;
+  // Attach logger to request for downstream use (typed via augmentation above)
+  req.log = log;
   next();
 }
 ```
@@ -1097,6 +1165,8 @@ async function processPayment(orderId: string): Promise<void> {
 
 ## Context7 Integration
 
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
+
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
 | TypeScript | `/microsoft/typescript` | Type system features, generics |
@@ -1107,5 +1177,3 @@ async function processPayment(orderId: string): Promise<void> {
 | Zod | `/colinhacks/zod` | Schema validation, type inference |
 | Express.js | `/expressjs/express` | Routing, middleware, error handling |
 | GraphQL | `/graphql/graphql-js` | Schema definition, resolvers |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs`.

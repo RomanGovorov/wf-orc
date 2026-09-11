@@ -5,7 +5,7 @@ description: "Launch multi-agent development workflow. Activates on: 'run orches
 
 # Orchestrate — Multi-Agent Workflow
 
-You are the workflow orchestrator. Choose the appropriate command based on the task type:
+You are the workflow orchestrator (main session). Choose the appropriate command based on the task type:
 
 ## Task Types
 
@@ -18,22 +18,23 @@ You are the workflow orchestrator. Choose the appropriate command based on the t
 ## Steps
 
 1. Identify task type from user's description
-2. Read the appropriate command file:
-   - `/wf-orc:research` → `commands/wf-orc/research.md`
-   - `/wf-orc:run` → `commands/wf-orc/run.md`
-   - `/wf-orc:full` → `commands/wf-orc/full.md`
+2. Invoke the appropriate command (`/wf-orc:run`, `/wf-orc:research`, `/wf-orc:full`) — or read its file if invocation is unavailable: `commands/wf-orc/<name>.md` in the repository/Qwen layout, `commands/<name>.md` in the installed Claude Code layout
 3. Follow the instructions in the command file
-4. Launch agents via `agent` tool
-5. Evaluate transitions based on agent JSON results
-6. Manage iteration counters (max 3 per fix cycle)
+4. Launch agents via the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code)
+5. Evaluate transitions based on agent JSON results and the Condition Evaluation Map in the command file
+6. Manage iteration counters (max 3 per fix cycle; apply `counter_reset_rules` from workflow.yaml)
 7. Handle parallel branches (comprehensive-test-engineer + performance-analyst)
-8. Continue until workflow completes or stops (research)
+8. Continue until the workflow completes (project-manager returns `workflow_complete: true`) or stops (research)
 
-## Key Reminders
+## Critical Rules (summary — the command file and workflow.yaml are authoritative)
 
-- **Always read the command file** for specific workflow instructions
-- **Forced progress**: when iteration ≥ max, continue forward regardless of issues
-- **Parallel join**: devops-infrastructure-engineer starts only after BOTH comprehensive-test-engineer AND performance-analyst complete
-- **Phase detection**: incoming transition determines Phase 1 (audit) vs Phase 2 (verification)
-- **User interaction**: agents may ask questions — relay to user
+- **Read `workflow.yaml`** from the extension/plugin root — single source of truth for transitions, conditions, counters
+- **No skipping**: do NOT skip workflow steps even if the task looks simple — unless the user explicitly says "skip workflow"
+- **Forced progress**: ALL agents return `status: "pass"` (never "fail"); when iteration ≥ max, continue forward and document unresolved issues
+- **Blocked results**: `blocked: true` → re-launch the same agent once with error context, then force forward (BLOCKED-RESULT PROTOCOL in workflow.yaml)
+- **Parallel join**: subagents run in the background on both platforms — devops-infrastructure-engineer starts only after BOTH test + performance results have arrived
+- **Counter resets**: when T45a/T45b fire, reset `code_review_iteration`, `test_fix_review_iteration`, `perf_fix_review_iteration` to 0 (evaluate → fire → reset → launch)
+- **Phase detection**: incoming transition determines Phase 1 (audit) vs Phase 2 (verification) for audit agents
+- **User interaction**: sub-agents cannot ask the user directly on either platform — relay `needs_user_input: true` results (ask from the main session, re-launch the agent with answers)
+- **deployment_only**: architecture-planner is the single aggregation point — it routes to code-implementer (T13) or devops (T_AGG_TO_DEVOPS)
 - **Research stops early**: `/wf-orc:research` stops after architecture-planner (no implementation)

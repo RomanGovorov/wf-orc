@@ -2,3 +2,4 @@
   - `code_review_iteration`, `test_fix_review_iteration`, `perf_fix_review_iteration`, `infrastructure_review_iteration`
   - `security_verification_iteration`, `ui_verification_iteration`, `data_verification_iteration`
   - `test_iteration`, `performance_iteration`, `documentation_iteration`
+- **Counter resets** (`counter_reset_rules` in workflow.yaml): when T45a/T45b fire (workflow advances into the test+perf phase), reset `code_review_iteration`, `test_fix_review_iteration`, `perf_fix_review_iteration` to 0. Strict order: evaluate conditions FIRST → fire → reset → launch. NEVER reset `test_iteration`, `performance_iteration`, `infrastructure_review_iteration`.

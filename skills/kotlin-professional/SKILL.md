@@ -54,17 +54,31 @@ suspend fun fetchUser(id: Long): User {
     return httpClient.get("/api/users/$id").body()
 }
 
+// UI/service state — sealed hierarchy (also used in §2 and §10)
+sealed interface UserState {
+    data object Idle : UserState
+    data object Loading : UserState
+    data class Loaded(val user: User) : UserState
+    data class Error(val message: String) : UserState
+}
+
 // CoroutineScope — structured concurrency
-class UserService(private val scope: CoroutineScope) {
+// NOTE: This is a *state-management* service (UI state flow), distinct
+// from the domain UserService in §8 (which returns Either<DomainError, User>).
+class UserStateService(private val scope: CoroutineScope) {
+    private val _state = MutableStateFlow<UserState>(UserState.Idle)
+    val state = _state.asStateFlow()
+
     fun loadUser(id: Long) {
         scope.launch {
             try {
+                _state.value = UserState.Loading
                 val user = fetchUser(id)
                 _state.value = UserState.Loaded(user)
             } catch (e: CancellationException) {
                 throw e // always rethrow CancellationException
             } catch (e: Exception) {
-                _state.value = UserState.Error(e)
+                _state.value = UserState.Error(e.message ?: "Unknown error")
             }
         }
     }
@@ -118,16 +132,18 @@ fun countDown(from: Int): Flow<Int> = flow {
 }
 
 // StateFlow — hot, always has a current value (like LiveData)
-class UserViewModel : ViewModel() {
-    private val _state = MutableStateFlow<UserState>(UserState.Loading)
+class UserViewModel(private val repository: UserRepository) : ViewModel() {
+    private val _state = MutableStateFlow<UserState>(UserState.Idle)
     val state: StateFlow<UserState> = _state.asStateFlow()
 
     fun loadUser(id: Long) {
         viewModelScope.launch {
             _state.value = UserState.Loading
             try {
-                val user = repository.getUser(id)
+                val user = repository.findById(id) ?: error("User not found: $id")
                 _state.value = UserState.Loaded(user)
+            } catch (e: CancellationException) {
+                throw e // always rethrow CancellationException
             } catch (e: Exception) {
                 _state.value = UserState.Error(e.message ?: "Unknown error")
             }
@@ -223,10 +239,11 @@ sealed interface UiEvent {
 ```kotlin
 // Data class — immutable value object
 data class User(
-    val id: Long,
+    val id: Long = 0, // 0 until persisted; the repository assigns the real id
     val name: String,
     val email: String,
     val role: Role = Role.USER,
+    val isActive: Boolean = true,
     val createdAt: Instant = Instant.now()
 )
 
@@ -249,12 +266,16 @@ data class Email(val value: String) {
 }
 
 // Data class in map operations
+data class OrderItem(val price: BigDecimal, val quantity: Int)
 data class OrderSummary(val orderId: Long, val total: BigDecimal, val itemCount: Int)
 
 val summaries: List<OrderSummary> = orders.map { order ->
     OrderSummary(
         orderId = order.id,
-        total = order.items.sumOf { it.price * it.quantity },
+        // sumOf has no BigDecimal overload and BigDecimal has no times(Int) — fold explicitly
+        total = order.items.fold(BigDecimal.ZERO) { acc, item ->
+            acc + item.price * BigDecimal(item.quantity)
+        },
         itemCount = order.items.size
     )
 }
@@ -296,6 +317,11 @@ fun Instant.toRelativeString(): String {
 @DslMarker
 annotation class HtmlDsl
 
+// Common supertype so HTML.children can hold both Head and Body
+sealed interface Tag {
+    fun render(): String
+}
+
 @HtmlDsl
 class HTML {
     private val children = mutableListOf<Tag>()
@@ -307,20 +333,20 @@ class HTML {
 }
 
 @HtmlDsl
-class Body {
+class Body : Tag {
     private val elements = mutableListOf<String>()
 
     fun h1(text: String) { elements.add("<h1>$text</h1>") }
     fun p(text: String) { elements.add("<p>$text</p>") }
     fun a(href: String, text: String) { elements.add("""<a href="$href">$text</a>""") }
 
-    fun render(): String = "<body>\n${elements.joinToString("\n")}\n</body>"
+    override fun render(): String = "<body>\n${elements.joinToString("\n")}\n</body>"
 }
 
 @HtmlDsl
-class Head {
+class Head : Tag {
     var title: String = ""
-    fun render(): String = "<head><title>$title</title></head>"
+    override fun render(): String = "<head><title>$title</title></head>"
 }
 
 // Using the DSL
@@ -402,7 +428,9 @@ fun Application.configureRouting() {
     routing {
         route("/api/v1") {
             get("/health") {
-                call.respond(mapOf("status" to "UP", "timestamp" to Instant.now()))
+                // mapOf("status" to "UP", "timestamp" to Instant.now()) would fail:
+                // Map<String, Any> has no serializer for Any — respond with a @Serializable DTO
+                call.respond(HealthResponse(status = "UP", timestamp = Instant.now().toString()))
             }
 
             authenticate("auth-jwt") {
@@ -417,8 +445,12 @@ fun Application.configureRouting() {
                     get("/{id}") {
                         val id = call.parameters["id"]?.toLongOrNull()
                             ?: throw ValidationException("Invalid user ID")
-                        val user = userService.findById(id)
-                            ?: throw NotFoundException("User not found: $id")
+                        // userService.findById returns Either<DomainError, User> (see §8).
+                        // fold() unwraps: Left → throw, Right → respond with user.
+                        val user = userService.findById(id).fold(
+                            { throw NotFoundException(it.message) },
+                            { it }
+                        )
                         call.respond(user)
                     }
 
@@ -446,8 +478,13 @@ data class UserResponse(
     val id: Long,
     val name: String,
     val email: String,
-    val createdAt: Instant
+    // kotlinx.serialization has NO built-in java.time.Instant serializer —
+    // wire one explicitly (InstantSerializer is defined in §7)
+    @Serializable(with = InstantSerializer::class) val createdAt: Instant
 )
+
+@Serializable
+data class HealthResponse(val status: String, val timestamp: String)
 
 @Serializable
 data class ErrorResponse(val message: String)
@@ -458,6 +495,7 @@ data class ErrorResponse(val message: String)
 ```kotlin
 import kotlinx.serialization.*
 import kotlinx.serialization.json.*
+import kotlinx.serialization.modules.*
 
 // Basic serialization
 @Serializable
@@ -483,6 +521,11 @@ val json = Json {
     coerceInputValues = true  // null for non-nullable → use default
     isLenient = false
     classDiscriminator = "type" // for polymorphic serialization
+    // kotlinx.serialization has no built-in java.time.Instant serializer —
+    // register one for every @Contextual Instant property
+    serializersModule = module {
+        contextual(Instant::class, InstantSerializer)
+    }
 }
 
 // Serialize / Deserialize
@@ -500,7 +543,7 @@ sealed class Notification {
 @SerialName("email")
 data class EmailNotification(
     override val id: String,
-    override val createdAt: Instant,
+    @Contextual override val createdAt: Instant, // resolved via the contextual InstantSerializer
     val subject: String,
     val body: String
 ) : Notification()
@@ -509,16 +552,23 @@ data class EmailNotification(
 @SerialName("push")
 data class PushNotification(
     override val id: String,
-    override val createdAt: Instant,
+    @Contextual override val createdAt: Instant,
     val title: String,
     val payload: Map<String, String>
 ) : Notification()
 
 // Serializes with discriminator: {"type": "email", "id": "...", ...}
 
-// Custom serializer
-@Serializable(with = InstantSerializer::class)
-data class Event(val timestamp: Instant, val name: String)
+// Custom serializer — kotlinx.serialization ships NO java.time.Instant serializer,
+// so the compiler plugin fails with "Serializer has not been found for type 'Instant'"
+// unless you wire one. Two options:
+//   1) per property: @Serializable(with = InstantSerializer::class)  (Event below)
+//   2) contextually: register in Json { serializersModule } + annotate with @Contextual (above)
+@Serializable
+data class Event(
+    @Serializable(with = InstantSerializer::class) val timestamp: Instant,
+    val name: String
+)
 
 object InstantSerializer : KSerializer<Instant> {
     override val descriptor = PrimitiveSerialDescriptor("Instant", PrimitiveKind.STRING)
@@ -539,7 +589,7 @@ data class PaginatedResponse<T>(
     val total: Long,
     val page: Int,
     val pageSize: Int,
-    val hasNext: Boolean = false // default encoded only when true
+    val hasNext: Boolean = false // encodeDefaults = true above → always encoded
 )
 ```
 
@@ -547,10 +597,9 @@ data class PaginatedResponse<T>(
 
 ```kotlin
 import arrow.core.Either
-import arrow.core.left
-import arrow.core.right
-import arrow.core.raise.either
+import arrow.core.raise.effect
 import arrow.core.raise.ensure
+import arrow.core.raise.toEither
 
 // Domain errors as sealed hierarchy
 sealed interface DomainError {
@@ -566,16 +615,26 @@ sealed interface DomainError {
     }
 }
 
-// Service returning Either
-class UserService(private val repo: UserRepository) {
+// Collaborator interface (implemented elsewhere, mocked in tests — see §10)
+interface EmailService {
+    suspend fun sendWelcome(email: String)
+}
 
-    fun findById(id: Long): Either<DomainError, User> = either {
+// Service returning Either — the repository is suspend (see §9), so use the
+// suspend-capable effect { } DSL and convert with .toEither() (Arrow 2.x).
+// The non-suspend either { } builder cannot call suspend functions.
+class UserService(
+    private val repo: UserRepository,
+    private val emailService: EmailService
+) {
+
+    suspend fun findById(id: Long): Either<DomainError, User> = effect {
         val user = repo.findById(id) ?: raise(DomainError.NotFound(id.toString()))
         ensure(user.isActive) { DomainError.Unauthorized("User is deactivated") }
         user
-    }
+    }.toEither()
 
-    fun create(request: CreateUserRequest): Either<DomainError, User> = either {
+    suspend fun create(request: CreateUserRequest): Either<DomainError, User> = effect {
         ensure(request.name.isNotBlank()) {
             DomainError.ValidationError("name", "must not be blank")
         }
@@ -585,17 +644,19 @@ class UserService(private val repo: UserRepository) {
         ensure(!repo.existsByEmail(request.email)) {
             DomainError.ValidationError("email", "already taken")
         }
-        repo.save(User(name = request.name, email = request.email))
-    }
+        val saved = repo.save(User(name = request.name, email = request.email))
+        emailService.sendWelcome(saved.email)
+        saved
+    }.toEither()
 }
 
-// Composing Either results
-fun processOrder(orderId: Long): Either<DomainError, Receipt> = either {
+// Composing Either results — same effect { } DSL for suspend composition
+suspend fun processOrder(orderId: Long): Either<DomainError, Receipt> = effect {
     val order = orderService.findById(orderId).bind()
     val user = userService.findById(order.userId).bind()
     val payment = paymentService.charge(user, order.total).bind()
     Receipt(order, user, payment)
-}
+}.toEither()
 
 // Kotlin stdlib Result (simpler cases)
 fun parseConfig(raw: String): Result<Config> = runCatching {
@@ -619,6 +680,7 @@ val config = readConfigFile()
 interface UserRepository {
     suspend fun findById(id: Long): User?
     suspend fun findByEmail(email: String): User?
+    suspend fun existsByEmail(email: String): Boolean
     suspend fun findAll(page: Int, size: Int): Page<User>
     suspend fun save(user: User): User
     suspend fun delete(id: Long): Boolean
@@ -647,11 +709,12 @@ class PostgresUserRepository(
 
     override suspend fun save(user: User): User = dbQuery {
         val id = Users.insertAndGetId {
-            it[name] = user.name
-            it[email] = user.email
-            it[createdAt] = user.createdAt
+            it[Users.name] = user.name
+            it[Users.email] = user.email
+            it[Users.createdAt] = user.createdAt
         }
-        user.copy(id = id)
+        // insertAndGetId returns EntityID<Long>; User.id is Long — unwrap with .value
+        user.copy(id = id.value)
     }
 
     override fun observeAll(): Flow<List<User>> = callbackFlow {
@@ -728,34 +791,41 @@ class UserServiceTest : DescribeSpec({
 })
 
 // Flow testing with Turbine
+// IMPORTANT: UserViewModel uses viewModelScope (= Dispatchers.Main.immediate).
+// Tests must set Main dispatcher before each test — otherwise Turbine crashes
+// with "Module with the Main dispatcher had failed to initialize".
 class UserViewModelTest : DescribeSpec({
+    beforeTest { Dispatchers.setMain(UnconfinedTestDispatcher()) }
+    afterTest { Dispatchers.resetMain() }
+
     describe("loadUser") {
-        it("should emit Loading then Loaded state") {
+        it("should emit Idle, then Loading, then Loaded state") {
             val repository = mockk<UserRepository>()
-            coEvery { repository.getUser(1L) } returns User(id = 1, name = "Alice", email = "a@b.com")
+            val alice = User(id = 1, name = "Alice", email = "a@b.com")
+            coEvery { repository.findById(1L) } returns alice
 
             val viewModel = UserViewModel(repository)
 
             viewModel.state.test {
-                awaitItem() shouldBe UserState.Loading // initial
+                awaitItem() shouldBe UserState.Idle // initial state
 
                 viewModel.loadUser(1L)
 
                 awaitItem() shouldBe UserState.Loading // emitted by loadUser
-                awaitItem() shouldBe UserState.Loaded(User(id = 1, name = "Alice", email = "a@b.com"))
+                awaitItem() shouldBe UserState.Loaded(alice)
             }
         }
 
         it("should emit Error on failure") {
             val repository = mockk<UserRepository>()
-            coEvery { repository.getUser(99L) } throws RuntimeException("Network error")
+            coEvery { repository.findById(99L) } throws RuntimeException("Network error")
 
             val viewModel = UserViewModel(repository)
 
             viewModel.state.test {
-                awaitItem() // skip initial
+                awaitItem() shouldBe UserState.Idle // initial state
                 viewModel.loadUser(99L)
-                awaitItem() // Loading
+                awaitItem() shouldBe UserState.Loading
                 val error = awaitItem()
                 error shouldBeInstanceOf UserState.Error::class
             }
@@ -793,7 +863,8 @@ fun UserCard(user: User, onClick: () -> Unit) {
     ) {
         Row(modifier = Modifier.padding(16.dp)) {
             AsyncImage(
-                model = user.avatarUrl,
+                // User.profile is nullable (see §7); use ?. to access avatarUrl safely
+                model = user.profile?.avatarUrl,
                 contentDescription = "Avatar of ${user.name}",
                 modifier = Modifier.size(48.dp).clip(CircleShape)
             )
@@ -815,9 +886,13 @@ expect fun getPlatformName(): String
 actual typealias PlatformContext = android.content.Context
 actual fun getPlatformName(): String = "Android ${Build.VERSION.SDK_INT}"
 
-// iosMain
-actual typealias PlatformContext = cocoapods.NSObject // simplified
-actual fun getPlatformName(): String = UIDevice.currentDevice.systemName() + " " + UIDevice.currentDevice.systemVersion
+// iosMain — Kotlin/Native interop types come from platform.* packages
+// (import platform.Foundation.NSObject; import platform.UIKit.UIDevice)
+actual typealias PlatformContext = platform.Foundation.NSObject
+actual fun getPlatformName(): String =
+    // ObjC properties surface as Kotlin properties — no parentheses
+    platform.UIKit.UIDevice.currentDevice.systemName + " " +
+        platform.UIKit.UIDevice.currentDevice.systemVersion
 
 // Shared ViewModel (commonMain)
 class UserListViewModel(
@@ -832,9 +907,14 @@ class UserListViewModel(
     fun loadUsers() {
         scope.launch {
             _state.value = UserListState.Loading
-            repository.findAll(0, 50)
-                .onRight { _state.value = UserListState.Loaded(it.items) }
-                .onLeft { _state.value = UserListState.Error(it.message) }
+            try {
+                val page = repository.findAll(0, 50) // returns Page<User> (see §9)
+                _state.value = UserListState.Loaded(page.items)
+            } catch (e: CancellationException) {
+                throw e // always rethrow CancellationException
+            } catch (e: Exception) {
+                _state.value = UserListState.Error(e.message ?: "Failed to load users")
+            }
         }
     }
 
@@ -909,8 +989,10 @@ class AutoRepositoryProcessor(
 
 // build.gradle.kts — register KSP
 plugins {
-    kotlin("jvm") version "2.0.21"
-    id("com.google.devtools.ksp") version "2.0.21-1.0.28"
+    kotlin("jvm") version "2.4.20"
+    // Since KSP 2.3.0, KSP is versioned independently of Kotlin (no more
+    // "<kotlin>-<ksp>" format) — check google/ksp releases for the latest
+    id("com.google.devtools.ksp") version "2.3.12"
 }
 
 dependencies {
@@ -950,6 +1032,8 @@ dependencies {
 
 ## Context7 Integration
 
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
+
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
 | Kotlin | (query "Kotlin") | Language features, coroutines |
@@ -957,5 +1041,3 @@ dependencies {
 | Spring Boot (Kotlin) | `/spring-projects/spring-boot` | Kotlin-specific Spring features |
 | Arrow | (query "Arrow Kotlin") | Functional patterns, Either, Option |
 | kotlinx.coroutines | (query "kotlinx coroutines") | Coroutine builders, channels |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs`.

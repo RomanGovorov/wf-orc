@@ -35,7 +35,10 @@ All write operations require the `X-API-Key` header:
 X-API-Key: ${UI_PM_API_KEY}
 ```
 
-> **Security note:** Do not use `set -x` when executing curl commands with API key — it will log the key to shell output. Use `set +x` before curl if debug mode is enabled.
+> **Security notes:**
+> 1. Do not use `set -x` when executing curl commands with API key — it will log the key to shell output. Use `set +x` before curl if debug mode is enabled.
+> 2. The `-H "X-API-Key: ${UI_PM_API_KEY}"` header is visible in `/proc/*/cmdline` to all local users during process lifetime. For production environments with untrusted local users, consider using `curl --config -` with headers passed via stdin, or a temporary config file with restricted permissions (600).
+> 3. The heredoc pattern (Pattern 2) correctly avoids exposing request body data in process listings.
 
 ## Operations
 
@@ -44,7 +47,7 @@ X-API-Key: ${UI_PM_API_KEY}
 When starting a new project that should appear in the UI dashboard:
 
 ```bash
-curl -s -X POST "${UI_PM_URL}/api/projects" \
+curl -sf --max-time 5 -X POST "${UI_PM_URL}/api/projects" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: ${UI_PM_API_KEY}" \
   -d '{"name": "Project Name", "description": "Brief description"}'
@@ -63,7 +66,7 @@ ASSIGNEE=${ASSIGNEE:-project-manager}
 ASSIGNEE_ESCAPED=$(printf '%s' "$ASSIGNEE" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
 # Use heredoc for JSON body to avoid exposing data in process list
-curl -s -X POST "${UI_PM_URL}/api/tasks" \
+curl -sf --max-time 5 -X POST "${UI_PM_URL}/api/tasks" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: ${UI_PM_API_KEY}" \
   -d @- <<EOF
@@ -90,7 +93,7 @@ Response contains `id` (UUID) — save it in the task file:
 When task status changes to `REVIEW` or `DONE`:
 
 ```bash
-curl -s -X PUT "${UI_PM_URL}/api/tasks/<ui-pm-uuid>" \
+curl -sf --max-time 5 -X PUT "${UI_PM_URL}/api/tasks/<ui-pm-uuid>" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: ${UI_PM_API_KEY}" \
   -d '{"status": "review"}'
@@ -103,7 +106,7 @@ Valid statuses: `in_work`, `review`, `done`.
 When a task is `CANCELLED` internally and should be removed from UI:
 
 ```bash
-curl -s -X DELETE "${UI_PM_URL}/api/tasks/<ui-pm-uuid>" \
+curl -sf --max-time 5 -X DELETE "${UI_PM_URL}/api/tasks/<ui-pm-uuid>" \
   -H "X-API-Key: ${UI_PM_API_KEY}"
 ```
 
@@ -113,10 +116,10 @@ For checking current state (e.g., before sync to avoid duplicates):
 
 ```bash
 # List all projects
-curl -s "${UI_PM_URL}/api/projects" -H "X-API-Key: ${UI_PM_API_KEY}"
+curl -sf --max-time 5 "${UI_PM_URL}/api/projects" -H "X-API-Key: ${UI_PM_API_KEY}"
 
 # List tasks filtered by project and status
-curl -s "${UI_PM_URL}/api/tasks?projectId=<uuid>&status=in_work" \
+curl -sf --max-time 5 "${UI_PM_URL}/api/tasks?projectId=<uuid>&status=in_work" \
   -H "X-API-Key: ${UI_PM_API_KEY}"
 ```
 
@@ -136,14 +139,14 @@ curl -s "${UI_PM_URL}/api/tasks?projectId=<uuid>&status=in_work" \
 
 - If `UI_PM_URL` or `UI_PM_API_KEY` is empty/unset — skip silently
 - If health check fails — skip silently, log nothing
-- If any API call returns non-2xx — skip silently, continue with internal backlog
+- If any API call returns non-2xx (`curl -f` returns exit 22) — skip silently, continue with internal backlog
 - Never block workflow on UI PM availability
 
 ## Best Practices
 
 1. Save UI PM UUID in task file immediately after creation — needed for all future updates
 2. Batch updates at Phase 7 (workflow completion) — update all remaining tasks to `done` in a loop
-3. Use `--max-time 5` on all curl calls to avoid hanging on unresponsive service
+3. Use `-f --max-time 5` on all curl calls — `-f` catches HTTP errors (4xx/5xx), `--max-time` avoids hanging on unresponsive service
 4. Create the project in UI PM once at project start, reuse the project UUID for all tasks
 5. Include TSK ID in task title for cross-referencing: `"TSK-001: Implement auth API"`
 

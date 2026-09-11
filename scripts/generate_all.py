@@ -17,8 +17,15 @@ Generated files:
 
 import re
 import sys
-import yaml
+import json
 from pathlib import Path
+
+# Check for PyYAML dependency
+try:
+    import yaml
+except ImportError:
+    print("Error: PyYAML is required. Install with: pip install pyyaml")
+    sys.exit(1)
 
 
 # Paths
@@ -31,7 +38,7 @@ WORKFLOW_PATH = PROJECT_ROOT / "workflow.yaml"
 def load_workflow():
     """Load workflow.yaml."""
     try:
-        with open(WORKFLOW_PATH, "r") as f:
+        with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
         print(f"Error: {WORKFLOW_PATH} not found")
@@ -81,7 +88,7 @@ def validate_workflow(workflow):
         transition_ids.add(transition["id"])
         if transition["from"] not in agent_ids:
             raise ValueError(f"Transition '{transition['id']}' references unknown agent: '{transition['from']}'")
-        if transition["to"] not in agent_ids:
+        if transition["to"] not in agent_ids and transition["to"] != "_terminal":
             raise ValueError(f"Transition '{transition['id']}' references unknown agent: '{transition['to']}'")
 
     # Validate iteration_counters have required fields
@@ -96,16 +103,62 @@ def validate_workflow(workflow):
             raise ValueError(f"Counter '{counter_id}' references unknown owner: '{counter_data['owner']}'")
 
 
+def validate_versions():
+    """Validate that all plugin manifests have the same version.
+
+    `.claude-plugin/plugin.json` is REQUIRED (install_claude.sh refuses to run
+    without it); the other manifests are optional and only warned about.
+    """
+    manifests = {
+        "gemini-extension.json": ("json", False),
+        ".claude-plugin/plugin.json": ("json", True),
+        ".codex-plugin/plugin.json": ("json", False),
+        ".cursor-plugin/plugin.json": ("json", False),
+        ".hermes-plugin/plugin.yaml": ("yaml", False),
+    }
+
+    versions = {}
+    for path_str, (fmt, required) in manifests.items():
+        path = PROJECT_ROOT / path_str
+        if not path.exists():
+            if required:
+                raise ValueError(f"Required manifest not found: {path_str}")
+            print(f"Warning: manifest not found: {path_str}")
+            continue
+        with open(path, encoding="utf-8") as f:
+            if fmt == "yaml":
+                data = yaml.safe_load(f)
+            else:
+                data = json.load(f)
+        version = data.get("version")
+        # A#13: Present but versionless manifest is an error (not silently skipped)
+        if version is None:
+            raise ValueError(f"Manifest exists but has no version field: {path_str}")
+        versions[path_str] = version
+
+    unique = set(versions.values())
+    if len(unique) > 1:
+        details = "\n".join(f"  {k}: {v}" for k, v in versions.items() if v)
+        raise ValueError(f"Version mismatch across manifests:\n{details}")
+    elif len(unique) == 1:
+        print(f"Version check: all manifests at {unique.pop()}")
+    else:
+        print("Warning: no versioned manifests found")
+
+
 def resolve_includes(content, max_depth=5):
     """Resolve {{INCLUDE:path}} directives by inserting fragment content.
 
     Supports nested includes up to max_depth levels.
+    Preserves one trailing newline from fragments for proper markdown spacing.
     """
     def replace_include(match):
         fragment_path = match.group(1)
         full_path = TEMPLATES_DIR / fragment_path
         if full_path.exists():
-            return full_path.read_text().rstrip()
+            # Strip trailing whitespace but preserve one newline for markdown spacing
+            text = full_path.read_text(encoding="utf-8").rstrip()
+            return text + "\n" if text else ""
         else:
             return f"<!-- INCLUDE NOT FOUND: {fragment_path} -->"
 
@@ -184,7 +237,8 @@ def generate_condition_evaluation_map(agents, transitions):
         for t in agent_transitions:
             transition_id = t["id"]
             to_agent = t["to"]
-            condition = t["condition"]
+            # Use .get() to avoid KeyError if condition is missing
+            condition = t.get("condition", "Always")
 
             # Format agent name with phase if applicable
             phase = t.get("phase", "")
@@ -247,7 +301,7 @@ def resolve_generated(content, workflow):
 
 def process_template(template_path, workflow):
     """Process a template file and return generated content."""
-    content = template_path.read_text()
+    content = template_path.read_text(encoding="utf-8")
 
     # First resolve includes (fragments)
     content = resolve_includes(content)
@@ -258,11 +312,55 @@ def process_template(template_path, workflow):
     return content
 
 
+def validate_generated_content(content, output_path):
+    """Validate generated content for unresolved directives.
+
+    Returns list of error messages (empty if valid).
+    """
+    errors = []
+
+    # Check for unresolved includes
+    include_errors = re.findall(r"<!-- INCLUDE NOT FOUND: ([^>]+) -->", content)
+    for path in include_errors:
+        errors.append(f"{output_path}: unresolved include: {path}")
+
+    # Check for unresolved generated types
+    gen_errors = re.findall(r"<!-- GENERATED TYPE NOT FOUND: ([^>]+) -->", content)
+    for gen_type in gen_errors:
+        errors.append(f"{output_path}: unresolved generated type: {gen_type}")
+
+    # A#10: Assert no raw {{INCLUDE: or {{GENERATED: directives remain
+    # (would indicate resolve_includes max_depth exceeded or new directive type)
+    raw_includes = re.findall(r"\{\{INCLUDE:[^}]+\}\}", content)
+    if raw_includes:
+        errors.append(f"{output_path}: {len(raw_includes)} raw {{{{INCLUDE:...}}}} directives remain unresolved")
+
+    raw_generated = re.findall(r"\{\{GENERATED:[^}]+\}\}", content)
+    if raw_generated:
+        errors.append(f"{output_path}: {len(raw_generated)} raw {{{{GENERATED:...}}}} directives remain unresolved")
+
+    return errors
+
+
+AUTO_GENERATED_HEADER = "<!-- AUTO-GENERATED from templates — DO NOT EDIT manually. Regenerate with: python3 scripts/generate_all.py -->\n\n"
+
+
 def generate_file(template_path, output_path, workflow):
     """Generate a single file from template."""
     try:
         content = process_template(template_path, workflow)
-        output_path.write_text(content)
+
+        # Validate generated content before writing
+        errors = validate_generated_content(content, output_path.relative_to(PROJECT_ROOT))
+        if errors:
+            for error in errors:
+                print(f"Error: {error}")
+            raise ValueError(f"Generated content has unresolved directives: {output_path}")
+
+        # Prepend AUTO-GENERATED header so readers can tell generated from hand-authored
+        content = AUTO_GENERATED_HEADER + content
+
+        output_path.write_text(content, encoding="utf-8")
         print(f"Generated {output_path.relative_to(PROJECT_ROOT)}")
     except IOError as e:
         print(f"Error writing {output_path}: {e}")
@@ -282,7 +380,7 @@ def patch_readme(workflow):
         print("Warning: README.md not found, skipping patch")
         return
 
-    content = readme_path.read_text()
+    content = readme_path.read_text(encoding="utf-8")
     agents = workflow.get("agents", [])
     counters = workflow.get("iteration_counters", {})
 
@@ -299,10 +397,9 @@ def patch_readme(workflow):
         )
         match = re.search(pattern, content, flags=re.DOTALL)
         if not match:
-            print(f"Warning: GENERATED:{gen_type} markers not found in README.md")
-            continue
-        replacement = r"\g<1>" + generator_fn() + r"\g<2>"
-        new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+            raise ValueError(f"README.md missing <!-- BEGIN GENERATED:{gen_type} --> markers — cannot patch tables. Add the markers around the relevant section.")
+        # Use lambda to avoid regex injection from backreferences in generated content
+        new_content = re.sub(pattern, lambda m: m.group(1) + generator_fn() + m.group(2), content, flags=re.DOTALL)
         if new_content == content:
             print(f"README.md:{gen_type} — already up to date")
         else:
@@ -310,7 +407,7 @@ def patch_readme(workflow):
         content = new_content
 
     try:
-        readme_path.write_text(content)
+        readme_path.write_text(content, encoding="utf-8")
         print(f"Patched {readme_path.relative_to(PROJECT_ROOT)}")
     except IOError as e:
         print(f"Error writing {readme_path}: {e}")
@@ -322,6 +419,7 @@ def main():
     try:
         workflow = load_workflow()
         validate_workflow(workflow)
+        validate_versions()
     except (FileNotFoundError, yaml.YAMLError):
         return 1
     except ValueError as e:
@@ -340,21 +438,42 @@ def main():
         if template_path.exists():
             try:
                 generate_file(template_path, output_path, workflow)
-            except IOError:
+            except (IOError, ValueError):
+                return 1
+            # Validate {{args}} placeholder is present (user input entry point)
+            generated_content = output_path.read_text(encoding="utf-8")
+            if "{{args}}" not in generated_content:
+                print(f"Error: {output_path.name} missing {{{{args}}}} placeholder — user input entry point lost!")
                 return 1
         else:
-            print(f"Warning: Template not found: {template_path.relative_to(PROJECT_ROOT)}")
+            # A#11: Missing command template is fatal (would leave stale output)
+            print(f"Error: Template not found: {template_path.relative_to(PROJECT_ROOT)}")
+            return 1
 
-    # Generate GEMINI.md
+    # Generate GEMINI.md (template is REQUIRED — AGENTS.md is generated as its copy;
+    # skipping silently would leave a stale AGENTS.md behind)
     gemini_template = TEMPLATES_DIR / "GEMINI.md.tmpl"
     gemini_output = PROJECT_ROOT / "GEMINI.md"
     if gemini_template.exists():
         try:
             generate_file(gemini_template, gemini_output, workflow)
-        except IOError:
+        except (IOError, ValueError):
             return 1
     else:
-        print(f"Warning: Template not found: {gemini_template.relative_to(PROJECT_ROOT)}")
+        print(f"Error: Template not found: {gemini_template.relative_to(PROJECT_ROOT)}")
+        return 1
+
+    # Generate AGENTS.md as copy of GEMINI.md for Codex/Cursor
+    # These platforms don't resolve file pointers, so inline the content
+    agents_output = PROJECT_ROOT / "AGENTS.md"
+    if gemini_output.exists():
+        try:
+            gemini_content = gemini_output.read_text(encoding="utf-8")
+            agents_output.write_text(gemini_content, encoding="utf-8")
+            print(f"Generated {agents_output.relative_to(PROJECT_ROOT)} (copy of GEMINI.md)")
+        except IOError as e:
+            print(f"Error writing AGENTS.md: {e}")
+            return 1
 
     # Patch README.md (replace GENERATED marker sections)
     patch_readme(workflow)

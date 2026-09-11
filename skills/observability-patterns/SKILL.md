@@ -224,7 +224,9 @@ def setup_tracing(
     resource = Resource.create({
         "service.name": service_name,
         "service.version": service_version,
-        "deployment.environment": "production",
+        # Renamed in the stable semantic conventions (deprecated since semconv
+        # v1.21): use "deployment.environment.name", NOT "deployment.environment"
+        "deployment.environment.name": "production",
     })
 
     provider = TracerProvider(
@@ -300,6 +302,7 @@ async def call_downstream_service(url: str):
     return response.json()
 
 # With aiohttp / requests — use propagator manually
+import aiohttp
 from opentelemetry.propagate import inject
 
 async def call_with_aiohttp(url: str):
@@ -316,6 +319,8 @@ async def call_with_aiohttp(url: str):
 
 ```python
 # observability/metrics.py — Prometheus metrics
+import time
+
 from prometheus_client import (
     Counter,
     Gauge,
@@ -397,7 +402,6 @@ class PrometheusMiddleware:
             return
 
         method = scope["method"]
-        path = scope["path"]
         start = time.perf_counter()
 
         status_code = 500
@@ -411,11 +415,19 @@ class PrometheusMiddleware:
             await self.app(scope, receive, send_wrapper)
         finally:
             duration = time.perf_counter() - start
+            # ⚠️ CARDINALITY: never label with the raw request path — /users/1,
+            # /users/2, ... each create a NEW time series and will explode
+            # Prometheus memory/storage. Label with the route TEMPLATE instead
+            # (e.g. /users/{user_id}) — a bounded set of label values.
+            # Starlette routing stores the matched route in scope during
+            # self.app(...), so it is available here after the response.
+            route = scope.get("route")
+            endpoint = getattr(route, "path_format", None) or "unmatched"
             http_requests_total.labels(
-                method=method, endpoint=path, status_code=str(status_code)
+                method=method, endpoint=endpoint, status_code=str(status_code)
             ).inc()
             http_request_duration.labels(
-                method=method, endpoint=path
+                method=method, endpoint=endpoint
             ).observe(duration)
 
 
@@ -434,9 +446,14 @@ async def metrics():
 
 ```python
 # observability/health.py — Kubernetes-compatible health probes
+import time
+from collections.abc import Awaitable, Callable
 from enum import Enum
 from pydantic import BaseModel
 from fastapi import HTTPException
+
+# (defined in app config) — APP_VERSION, DOWNSTREAM_URL
+# (defined elsewhere) — AsyncSessionLocal, redis_client, router, app, settings, text
 
 class HealthStatus(str, Enum):
     HEALTHY = "healthy"
@@ -454,43 +471,50 @@ class HealthResponse(BaseModel):
     components: dict[str, ComponentHealth]
 
 
+# A health check is an async callable returning a bool
+CheckFn = Callable[[], Awaitable[bool]]
+
 class HealthChecker:
-    """Aggregates health from multiple components."""
+    """Aggregates health from multiple components.
+
+    Critical check failure   -> UNHEALTHY (readiness probe should fail)
+    Non-critical failure(s)  -> DEGRADED  (still serving, reduced capability)
+    """
 
     def __init__(self):
-        self._checks: dict[str, callable] = {}
+        # name -> (check function, is it critical?)
+        self._checks: dict[str, tuple[CheckFn, bool]] = {}
 
-    def register(self, name: str, check_fn: callable):
-        self._checks[name] = check_fn
+    def register(self, name: str, check_fn: CheckFn, *, critical: bool = True):
+        self._checks[name] = (check_fn, critical)
 
     async def check_all(self) -> HealthResponse:
         """Run all health checks — used for /health/readiness."""
         components = {}
         overall = HealthStatus.HEALTHY
 
-        for name, check_fn in self._checks.items():
+        for name, (check_fn, critical) in self._checks.items():
             try:
                 start = time.perf_counter()
-                result = await check_fn()
-                latency = (time.perf_counter() - start) * 1000
-
-                if result:
-                    components[name] = ComponentHealth(
-                        status=HealthStatus.HEALTHY,
-                        latency_ms=round(latency, 2),
-                    )
-                else:
-                    components[name] = ComponentHealth(
-                        status=HealthStatus.UNHEALTHY,
-                        latency_ms=round(latency, 2),
-                    )
-                    overall = HealthStatus.UNHEALTHY
+                ok = bool(await check_fn())
+                latency = round((time.perf_counter() - start) * 1000, 2)
+                details = None
             except Exception as exc:
-                components[name] = ComponentHealth(
-                    status=HealthStatus.UNHEALTHY,
-                    details={"error": str(exc)},
-                )
-                overall = HealthStatus.UNHEALTHY
+                ok = False
+                latency = None
+                details = {"error": str(exc)}
+
+            components[name] = ComponentHealth(
+                status=HealthStatus.HEALTHY if ok else HealthStatus.UNHEALTHY,
+                latency_ms=latency,
+                details=details,
+            )
+
+            if not ok:
+                if critical:
+                    overall = HealthStatus.UNHEALTHY
+                elif overall is HealthStatus.HEALTHY:
+                    overall = HealthStatus.DEGRADED
 
         return HealthResponse(
             status=overall,
@@ -502,6 +526,7 @@ class HealthChecker:
 # Individual check functions
 async def check_database() -> bool:
     try:
+        # (defined in app config) — AsyncSessionLocal is the async session factory
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
         return True
@@ -510,12 +535,14 @@ async def check_database() -> bool:
 
 async def check_redis() -> bool:
     try:
+        # (defined in app config) — redis_client is the shared Redis instance
         return await redis_client.ping()
     except Exception:
         return False
 
 async def check_downstream_api() -> bool:
     try:
+        import httpx  # (defined in app config) — settings.DOWNSTREAM_URL
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.DOWNSTREAM_URL}/health")
             return resp.status_code == 200
@@ -523,11 +550,12 @@ async def check_downstream_api() -> bool:
         return False
 
 
-# Register checks
+# Register checks — critical failures make the service UNHEALTHY;
+# non-critical failures only DEGRADE it
 health_checker = HealthChecker()
-health_checker.register("database", check_database)
-health_checker.register("redis", check_redis)
-health_checker.register("downstream_api", check_downstream_api)
+health_checker.register("database", check_database)                 # critical
+health_checker.register("redis", check_redis)                       # critical
+health_checker.register("downstream_api", check_downstream_api, critical=False)
 
 
 # Kubernetes probe endpoints
@@ -543,7 +571,8 @@ async def liveness():
 @router.get("/health/ready")
 async def readiness():
     """Readiness probe — can the app serve traffic?
-    Returns 200 only if all dependencies are healthy.
+    Returns 503 when a CRITICAL dependency is down (UNHEALTHY);
+    DEGRADED (non-critical failures only) still returns 200.
     Kubernetes removes from Service endpoints on failure.
     """
     result = await health_checker.check_all()
@@ -772,12 +801,15 @@ async def memory_snapshot_endpoint():
 import asyncio
 
 async def detect_event_loop_blocking():
-    """Enable slow callback detection — logs when event loop is blocked."""
+    """Enable slow-callback detection — logs callbacks that block the event loop.
+
+    DEBUG ONLY: set_debug(True) is REQUIRED for slow_callback_duration to have
+    any effect, and it adds significant overhead (extra logging, coroutine
+    origin tracking, slower scheduling). Never leave this enabled in production.
+    """
     loop = asyncio.get_running_loop()
     loop.slow_callback_duration = 0.1  # Warn if callback takes > 100ms
-
-    # Enable debug mode (dev only — adds significant overhead)
-    # loop.set_debug(True)
+    loop.set_debug(True)               # without this, the line above does nothing
 
 
 # FastAPI endpoint for runtime profiling
@@ -841,6 +873,8 @@ structlog.configure(
 
 
 # ✅ GOOD: Structured error with full context
+from decimal import Decimal
+
 async def handle_payment(order_id: int, amount: Decimal):
     log = logger.bind(order_id=order_id, amount=float(amount))
     try:
@@ -901,13 +935,13 @@ async def handle_payment(order_id: int, amount: Decimal):
 
 ## Context7 Integration
 
+When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
+
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
 | OpenTelemetry | `/websites/opentelemetry_io` | Tracing setup, instrumentation, propagation |
 | structlog | `/hynek/structlog` | Configuration, processors |
 | Prometheus | `/prometheus/client_python` | Client instrumentation |
-
-Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs` to get current examples.
 
 **When to query:**
 - Before setting up OpenTelemetry — verify current SDK version and auto-instrumentation packages

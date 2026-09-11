@@ -19,4 +19,10 @@ if [[ -d "$PLUGIN_DIR" ]]; then
 else
     echo "  (not installed)"
 fi
+
+# Clean up orphan staging/backup dirs from interrupted installs
+for stale in "${PLUGIN_DIR}.staging."* "${PLUGIN_DIR}.bak."*; do
+    [[ -e "$stale" ]] && rm -rf "$stale" && echo "  ✓ Removed stale $stale"
+done
+
 echo "Restart Claude Code to complete uninstall."

@@ -1,5 +1,7 @@
+.claude/
+.playwright-mcp/
 .qwen/
 .vscode/
-.env
 docs/
-.playwright-mcp
+__pycache__/
+.env
