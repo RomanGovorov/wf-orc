@@ -84,7 +84,7 @@ wf-orc/
 │   ├── kotlin-professional/   # Kotlin patterns
 │   └── pm-task-tracker/       # External PM dashboard integration
 ├── templates/                 # Template files for code generation
-│   ├── fragments/             # Reusable content fragments (13 files)
+│   ├── fragments/             # Reusable content fragments (15 files)
 │   ├── commands/              # Command templates (run.md.tmpl, etc.)
 │   └── GEMINI.md.tmpl        # Context file template
 ├── scripts/                   # Utility scripts
@@ -297,10 +297,11 @@ python scripts/generate_all.py
 
 ```
 templates/
-├── fragments/                    # Reusable content fragments (13 files)
+├── fragments/                    # Reusable content fragments (15 files)
 │   ├── artifact_forwarding.md
 │   ├── artifact_validation.md
 │   ├── code_implementer_mapping.md
+│   ├── code_reviewer_context.md
 │   ├── derived_conditions.md
 │   ├── forced_progress.md
 │   ├── glossary.md
@@ -308,6 +309,7 @@ templates/
 │   ├── logging.md
 │   ├── no_skipping.md
 │   ├── parallel_execution.md
+│   ├── phase1_aggregation.md
 │   ├── phase_detection.md
 │   ├── user_interaction.md
 │   └── workflow_completion.md
