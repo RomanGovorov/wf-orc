@@ -63,20 +63,9 @@ User Request
 9. **Completion**: the workflow ends when project-manager returns `workflow_complete: true` — not when T70 fires (T70_REV loops are possible)
 10. **Code-reviewer context**: determine context from the incoming transition — application review (`T34`, `T_CODE_TO_*`, `T_*_PASS`) evaluates only `T43*` and `T45a/b`; infrastructure review (`T_DEVOPS_REVIEW`) evaluates only `T_DEVOPS_REVIEW_*`. Never cross-evaluate.
 
-{{INCLUDE:fragments/phase1_aggregation.md}}
-
----
-
-{{INCLUDE:fragments/parallel_execution.md}}
-
 ## Detailed Instructions
 
 See `/wf-orc:run` command for full orchestration instructions with complete transition table.
-
-{{INCLUDE:fragments/glossary.md}}
-
-{{INCLUDE:fragments/logging.md}}
-<!-- Logging fragment included here for Gemini/Qwen context; run.md omits it for brevity — see workflow.yaml KEY RULES for the authoritative transition/counter rules. -->
 
 ## Skills
 
