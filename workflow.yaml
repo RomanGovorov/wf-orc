@@ -1,5 +1,5 @@
 # Agent Workflow DSL - Single Source of Truth
-version: "0.6.0"
+version: "0.6.1"
 #
 # Conventions:
 # - Forced-pass: when iteration >= max (3), the reviewing agent MUST pass
