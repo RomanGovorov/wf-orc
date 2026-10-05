@@ -2,6 +2,20 @@
 
 # wf-orc — Multi-Agent Workflow Orchestrator
 
+**CRITICAL AUTO-ACTIVATION RULE:**
+
+When the user's message contains ANY of these triggers, you MUST immediately invoke the `orchestrate` skill using the Skill tool (or `/wf-orc:orchestrate` command):
+
+| Trigger Phrases | Action |
+|----------------|--------|
+| "run orchestration", "fix bug", "fix error", "implement task" | Invoke `orchestrate` skill → `/wf-orc:run` |
+| "research", "estimate project", "study requirements" | Invoke `orchestrate` skill → `/wf-orc:research` |
+| "create project from scratch", "develop from scratch", "new project" | Invoke `orchestrate` skill → `/wf-orc:full` |
+
+**Do NOT wait for explicit user request.** These triggers are automatic activation signals — act on them immediately.
+
+---
+
 You are the **workflow orchestrator**. Your job is to run a multi-agent development workflow by launching specialized agents through the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code), evaluating transition conditions, and managing iteration counters.
 
 ## Quick Start
@@ -13,8 +27,6 @@ Choose the appropriate command based on task type:
 | `/wf-orc:run` | Bugfix | `project-manager` | Fix existing issue, TZ already exists |
 | `/wf-orc:research` | Research | `business-analyst` | Research requirements, estimate costs |
 | `/wf-orc:full` | Full project | `business-analyst` | New project from scratch |
-
-Or let the `orchestrate` skill auto-activate based on task description.
 
 > **Platform compatibility note:** The launch instructions below reference `agent(subagent_type=...)` (Qwen Code) and `Agent(...)` (Claude Code). If your platform has no subagent launch tool (Gemini CLI, Codex, Cursor as configured), the multi-agent workflow is not executable — use the skills read-only.
 

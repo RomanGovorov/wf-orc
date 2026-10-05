@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: "Launch multi-agent development workflow. Activates on: 'run orchestration' → /wf-orc:run, 'research', 'estimate project' → /wf-orc:research, 'create project from scratch', 'develop from scratch' → /wf-orc:full, 'fix bug', 'fix error' → /wf-orc:run. Reads workflow.yaml and orchestrates 12 specialized agents through the full development lifecycle."
+description: "Multi-agent development workflow orchestrator. **AUTO-ACTIVATE** when user requests implementation: 'run orchestration', 'fix bug', 'fix error', 'implement task', 'create project', 'develop from scratch', 'research', 'estimate project'. This skill MUST be invoked automatically — do not wait for explicit user request. Reads workflow.yaml and orchestrates 12 specialized agents through the full development lifecycle."
 ---
 
 # Orchestrate — Multi-Agent Workflow

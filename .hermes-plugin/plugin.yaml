@@ -1,5 +1,5 @@
 name: wf-orc
-version: 0.6.1
+version: 0.6.2
 description: Multi-agent development workflow orchestrator with 12 specialized agents
 author:
   name: Roman Govorov
