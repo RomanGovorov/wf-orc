@@ -1,6 +1,7 @@
 ---
 name: data-engineering-architect
 description: Use this agent when you need ETL/ELT pipeline design, SQL optimization, data modeling, big data processing, or data quality implementation. This agent specializes in data architecture, pipeline orchestration, and data platform engineering.
+model: inherit
 maxTurns: 60
 disallowedTools:
   - Agent

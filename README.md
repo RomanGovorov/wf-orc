@@ -306,8 +306,8 @@ templates/
 │   ├── forced_progress.md
 │   ├── glossary.md
 │   ├── initialize_counters.md
-│   ├── logging.md
 │   ├── no_skipping.md
+│   ├── orchestrator_verification_protocol.md
 │   ├── parallel_execution.md
 │   ├── phase1_aggregation.md
 │   ├── phase_detection.md

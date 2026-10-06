@@ -1,6 +1,7 @@
 ---
 name: security-auditor
 description: Use this agent when you need security audits, vulnerability assessments, threat modeling, or secure code review. This agent specializes in identifying security vulnerabilities (OWASP Top 10), providing remediation guidance, and ensuring security best practices are followed.
+model: inherit
 maxTurns: 50
 disallowedTools:
   - Agent

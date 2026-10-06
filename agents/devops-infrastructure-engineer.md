@@ -1,6 +1,7 @@
 ---
 name: devops-infrastructure-engineer
 description: Use this agent when you need CI/CD pipelines, Docker containerization, Kubernetes configurations, infrastructure as code (Terraform), monitoring setup, or cloud infrastructure design. This agent specializes in automation, deployment, and operational excellence.
+model: inherit
 maxTurns: 60
 disallowedTools:
   - Agent

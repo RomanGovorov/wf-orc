@@ -1,6 +1,11 @@
 ---
 name: orchestrate
 description: "Multi-agent development workflow orchestrator. **AUTO-ACTIVATE** when user requests implementation: 'run orchestration', 'fix bug', 'fix error', 'implement task', 'create project', 'develop from scratch', 'research', 'estimate project'. This skill MUST be invoked automatically — do not wait for explicit user request. Reads workflow.yaml and orchestrates 12 specialized agents through the full development lifecycle."
+priority: 10
+paths:
+  - commands/wf-orc/run.md
+  - commands/wf-orc/full.md
+  - commands/wf-orc/research.md
 ---
 
 # Orchestrate — Multi-Agent Workflow

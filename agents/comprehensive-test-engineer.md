@@ -1,6 +1,7 @@
 ---
 name: comprehensive-test-engineer
 description: Use this agent when you need comprehensive test coverage for recently developed code. This agent creates thorough unit, integration, and functional tests, executes them, and reports detailed results including pass/fail status, coverage metrics, and specific failure details.
+model: inherit
 maxTurns: 80
 disallowedTools:
   - Agent

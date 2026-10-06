@@ -1,6 +1,7 @@
 ---
 name: project-manager
 description: Project management hub of the wf-orc workflow. Manages the product backlog, prioritizes tasks, tracks task files, and reviews documentation. Launched by the workflow orchestrator at the start (backlog → architecture) and end (documentation review → completion) of the main workflow; coordinates other agents indirectly via result flags and handoff files — does not spawn agents.
+model: inherit
 maxTurns: 100
 disallowedTools:
   - Agent

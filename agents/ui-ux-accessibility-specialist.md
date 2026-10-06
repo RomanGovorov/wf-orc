@@ -1,6 +1,7 @@
 ---
 name: ui-ux-accessibility-specialist
 description: Use this agent when you need UI specifications, accessibility audits (WCAG), design system documentation, or user interface design review. This agent specializes in creating user-centered designs and ensuring accessibility compliance.
+model: inherit
 maxTurns: 50
 disallowedTools:
   - Agent

@@ -1,6 +1,7 @@
 ---
 name: code-reviewer
 description: Use this agent when you need an independent code review, technical debt assessment, or code quality audit. This agent specializes in identifying code smells, security issues, performance problems, and providing actionable recommendations for improvement.
+model: inherit
 maxTurns: 50
 disallowedTools:
   - Agent

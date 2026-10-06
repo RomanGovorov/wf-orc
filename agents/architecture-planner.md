@@ -1,6 +1,7 @@
 ---
 name: architecture-planner
 description: Use this agent when you need architectural planning, system design, or strategic planning for software projects. This agent excels at creating comprehensive plans before implementation, reviewing existing architecture, and aggregating Phase 1 audit results (security, UI/UX, data) into the implementation handoff.
+model: inherit
 maxTurns: 80
 disallowedTools:
   - Agent
