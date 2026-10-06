@@ -5,7 +5,7 @@
 
 ## Test Environment
 - **Claude Code version:** [specify version]
-- **wf-orc version:** 0.6.2
+- **wf-orc version:** 0.6.3
 - **Test date:** [YYYY-MM-DD]
 - **Tester:** [name]
 
