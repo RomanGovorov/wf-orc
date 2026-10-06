@@ -129,7 +129,7 @@ You have a limited number of turns (`maxTurns` in frontmatter). Manage them wise
 
 **Note**: You do not observe iteration counters — the orchestrator injects "FINAL ITERATION" into your prompt when `documentation_iteration` has reached max. When you see this phrase, immediately return `documentation_complete: true` with `forced: true`, including a Known Gaps section.
 
-Note: `documentation_needs_revision` is project-manager's flag — never emit it. On forced completion, set `documentation_complete: true` so T70 fires on the flag, not only on the orchestrator's iteration counter.
+Note: `documentation_needs_revision` is project-manager's flag — never emit it. On forced completion, set `documentation_complete: true` so the orchestrator routes to workflow completion on the flag, not only on the iteration counter.
 
 ## Skills
 

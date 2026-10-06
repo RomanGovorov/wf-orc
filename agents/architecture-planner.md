@@ -57,8 +57,8 @@ You have a limited number of turns (`maxTurns` in frontmatter). Manage them wise
 ## Output Data
 
 - **To auditors** (optional Phase 1 audit/design): `system_architecture_document`, `adrs`, `implementation_plan`, `component_specifications`, `data_flow_diagram`
-- **To `code-implementer`** (aggregated handoff, T13): all architecture documents + all audit artifacts
-- **To `devops-infrastructure-engineer`** (deployment_only aggregation, T_AGG_TO_DEVOPS): architecture documents + `pipeline_configurations`, `data_models`, `infrastructure_requirements` + security/ui findings reports
+- **To `code-implementer`** (implementation path): all architecture documents + all audit artifacts
+- **To `devops-infrastructure-engineer`** (deployment-only path): architecture documents + `pipeline_configurations`, `data_models`, `infrastructure_requirements` + security/ui findings reports
 
 ## Specialized Agent Invocation
 
@@ -130,7 +130,7 @@ The orchestrator calls the following specialized agents based on criteria declar
 }
 ```
 
-**All audits aggregated — deployment_only (routes to devops via T_AGG_TO_DEVOPS, NOT implementation):**
+**All audits aggregated — deployment_only (routes to devops via deployment-only path, NOT implementation):**
 When any incoming Phase 1 data result carried `deployment_only: true` (infrastructure-only, no application code needed), your aggregate result MUST include `deployment_only: true`. NEVER combine `deployment_only: true` with "Ready for implementation" — the orchestrator routes to `devops-infrastructure-engineer` instead of `code-implementer`:
 ```json
 {
@@ -154,7 +154,7 @@ When launched via `/wf-orc:research`, create high-level architecture only. Do NO
 ```
 
 **IMPORTANT:** When `research_complete: true` is returned, the orchestrator MUST:
-1. NOT fire T13 or any audit transitions (T12a/b/c)
+1. Do not include audit-related flags in your result when deployment_only is true
 2. Report completion to user with cost/complexity estimates
 3. Terminate the workflow (research mode does not proceed to implementation)
 

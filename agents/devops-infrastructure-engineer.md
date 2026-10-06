@@ -48,7 +48,7 @@ You have a limited number of turns (`maxTurns` in frontmatter). Manage them wise
 - `constraints.md` — budget, compliance requirements
 - `non-functional.md` — SLA targets, availability requirements
 
-**Conditional** — From `architecture-planner` (T_AGG_TO_DEVOPS, deployment_only path):
+**Conditional** — From `architecture-planner` (deployment-only path):
 - `pipeline_configurations`, `data_models`, `infrastructure_requirements`
 - `security_findings_report`, `ui_findings_report`, `data_findings_report` (aggregated audit context)
 - **Note**: on this path, `testing_report`/`profiling_report` do NOT exist (test/perf phases are skipped in deployment_only). Proceed directly to infrastructure setup.

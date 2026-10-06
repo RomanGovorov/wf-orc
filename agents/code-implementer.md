@@ -75,16 +75,16 @@ All outputs include: `source_code`, `unit_tests`, `implementation_report`.
 
 ### Transition Mapping (for orchestrator)
 
-| JSON Flag in Result | Transition | Next Agent |
+| JSON Flag in Result | Route | Next Agent |
 |---|---|---|
-| No fix flags present | T34 | `code-reviewer` |
-| `security_fixes_complete: true` | T_CODE_TO_SEC | `security-auditor` |
-| `ui_fixes_complete: true` | T_CODE_TO_UI | `ui-ux-accessibility-specialist` |
-| `data_fixes_complete: true` | T_CODE_TO_DATA | `data-engineering-architect` |
-| `test_fixes_complete: true` | T_CODE_TO_TEST | `code-reviewer` |
-| `perf_fixes_complete: true` | T_CODE_TO_PERF | `code-reviewer` |
+| No fix flags present | standard review | `code-reviewer` |
+| `security_fixes_complete: true` | security fixes | `security-auditor` |
+| `ui_fixes_complete: true` | UI fixes | `ui-ux-accessibility-specialist` |
+| `data_fixes_complete: true` | data fixes | `data-engineering-architect` |
+| `test_fixes_complete: true` | test fixes | `code-reviewer` |
+| `perf_fixes_complete: true` | performance fixes | `code-reviewer` |
 
-**Rule:** Check the JSON result for fix flags. If a flag is present, use the corresponding transition. If no flags are present, use T34 (standard pass to code-reviewer).
+**Rule:** Check the JSON result for fix flags. If a flag is present, return it in your result. If no flags are present, return a standard pass result.
 
 ## Core Responsibilities
 
@@ -121,7 +121,7 @@ If you cannot complete implementation (build failure, unresolvable conflict, mis
 When the orchestrator receives `blocked: true`, it handles it BEFORE evaluating transitions:
 1. Log error details
 2. First blocked result → re-launch code-implementer ONCE (attempt 2 of max 2) with this result's `content` appended as error context. Per-task launches (run.md §3a) each get their own 2-attempt budget
-3. Second blocked result → stop retrying: evaluate outgoing transitions normally (typically T34 → code-reviewer), forward `implementation_report` + blocked content downstream, and surface the blockage prominently in the final workflow summary
+3. Second blocked result → stop retrying: return standard pass result (typically → code-reviewer), forward `implementation_report` + blocked content downstream, and surface the blockage prominently in the final workflow summary
 4. Blocked retries NEVER increment iteration counters (they are not fix cycles)
 
 ## Operational Methodology

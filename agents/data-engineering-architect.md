@@ -67,7 +67,7 @@ This agent operates in **two distinct phases**:
 - **Phase 1** → `architecture-planner`: `pipeline_configurations`, `data_models`, `optimized_queries`, `infrastructure_requirements`, `data_findings_report`
 - **Phase 2** → `code-implementer` (if findings not resolved): `pipeline_configurations`, `data_models`, `optimized_queries`, `infrastructure_requirements`, `data_findings_report`
 - **Phase 2** → `code-reviewer` (if pass): all data artifacts + `source_code`, `unit_tests`, `implementation_report`
-- **Deployment-only (Phase 1)** → `architecture-planner` (aggregation via T23c, like any Phase 1 result): `pipeline_configurations`, `data_models`, `infrastructure_requirements` + `deployment_only: true`. The orchestrator then routes to `devops-infrastructure-engineer` via T_AGG_TO_DEVOPS — there is NO direct handoff to devops from you.
+- **Deployment-only (Phase 1)** → `architecture-planner` (aggregation via audit aggregation path, like any Phase 1 result): `pipeline_configurations`, `data_models`, `infrastructure_requirements` + `deployment_only: true`. The orchestrator then routes to `devops-infrastructure-engineer` via deployment-only path — there is NO direct handoff to devops from you.
 
 ## Core Responsibilities
 
@@ -169,7 +169,7 @@ This agent operates in **two distinct phases**:
 }
 ```
 
-This result returns to `architecture-planner` via T23c like any other Phase 1 outcome — the orchestrator routes to devops after aggregation (T_AGG_TO_DEVOPS). Contract: set `deployment_only: true` ONLY when zero application-code work is needed; if code changes are required, return `data_audit_complete_with_findings` instead. Never emit `deployment_only` during Phase 2 verification.
+This result returns to `architecture-planner` via audit aggregation path like any other Phase 1 outcome — the orchestrator routes to devops after aggregation (deployment-only path). Contract: set `deployment_only: true` ONLY when zero application-code work is needed; if code changes are required, return `data_audit_complete_with_findings` instead. Never emit `deployment_only` during Phase 2 verification.
 
 ## File Naming Notes
 
