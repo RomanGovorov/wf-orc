@@ -1,6 +1,6 @@
 ---
 name: ci-cd-patterns
-description: CI/CD Patterns — pipeline design, deployment strategies, Docker best practices, IaC, GitOps, monitoring. Use when setting up CI/CD, containerization, deployment, IaC.
+description: CI/CD Patterns — pipeline design, deployment strategy, Docker best practices, IaC, GitOps, monitoring. Use when setting up CI/CD, containerization, deployment, IaC.
 priority: 5
 paths:
   - "Dockerfile*"
@@ -66,7 +66,7 @@ Template for setting up CI/CD pipelines — from lint and tests to production de
 
 ## Patterns
 
-### Pattern 1: CI Pipeline — GitHub Actions (FastAPI)
+### Pattern 1: CI Pipeline — GitHub Actions
 
 ```yaml
 # .github/workflows/ci.yml
@@ -92,20 +92,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff mypy
-
-      - name: Ruff check
-        run: ruff check . --output-format=github
-
-      - name: Ruff format check
-        run: ruff format . --check
-
-      - name: MyPy type check
-        run: mypy myapp/ --ignore-missing-imports
+      - run: pip install ruff mypy
+      - run: ruff check . --output-format=github
+      - run: ruff format . --check
+      - run: mypy myapp/ --ignore-missing-imports
 
   test:
     name: Test
@@ -117,51 +107,27 @@ jobs:
         env:
           POSTGRES_PASSWORD: test
           POSTGRES_DB: test_db
-        ports:
-          - 5432:5432
+        ports: ['5432:5432']
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-
+      - run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Run tests with coverage
         env:
           DATABASE_URL: postgresql://postgres:test@localhost:5432/test_db
         run: |
-          pytest tests/ \
-            --cov=myapp \
-            --cov-report=xml \
-            --cov-fail-under=80 \
-            --junitxml=junit.xml
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v5
+          pytest tests/ --cov=myapp --cov-report=xml --cov-fail-under=80
+      - uses: codecov/codecov-action@v5
         with:
-          # v4 renamed the input `file` -> `files` (unknown inputs are silently
-          # ignored, so the old name just falls back to autodiscovery);
-          # v5 requires CODECOV_TOKEN for private repos (tokenless uploads only
-          # work for fork -> public-upstream PRs).
           files: ./coverage.xml
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: junit.xml
+          token: ${{ secrets.CODECV_TOKEN }}
 
   build:
     name: Build & Push Docker Image
@@ -173,54 +139,39 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
 ```
 
 ### Pattern 2: Docker Multi-Stage Build
 
 ```dockerfile
-# Build stage — build/test tools + pre-compiled wheels for runtime deps
+# Build stage — build/test tools + pre-compiled wheels
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
 COPY requirements.txt requirements-build.txt ./
-# Build wheels for the RUNTIME dependencies (installed in the final stage)
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
-# Build/test-only tools (compilers, pytest, ruff, ...) — stay in this stage
 RUN pip install --no-cache-dir -r requirements-build.txt
 
-# Copy application code
 COPY . .
-# Pre-compile Python files — faster startup
 RUN python -m compileall .
 
 # Final stage — minimal runtime
 FROM python:3.12-slim AS production
 
-# Non-root user — security best practice
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Install ONLY runtime dependencies from the pre-built wheels —
-# build/test tools from requirements-build.txt never reach this image
 COPY --from=builder /wheels /wheels
 COPY --from=builder requirements.txt ./
 RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
@@ -229,80 +180,43 @@ COPY --from=builder --chown=appuser:appuser /app /app
 
 WORKDIR /app
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
-# Run as non-root user
 USER appuser
-
-# Expose port
 EXPOSE 8000
 
-# Run with gunicorn — production server.
-# requirements.txt must include gunicorn, uvicorn AND the separate
-# `uvicorn-worker` package: the built-in `uvicorn.workers.UvicornWorker` class
-# is discouraged since uvicorn 0.30 — the maintained worker lives in the
-# separate `uvicorn-worker` package (`uvicorn_worker.UvicornWorker`). The
-# legacy module still exists in current uvicorn but is no longer updated.
-# (Alternative without gunicorn: `uvicorn myapp.main:app --workers 4` —
-# uvicorn has native multi-process support since 0.30.)
 CMD ["gunicorn", "myapp.main:app", \
      "-w", "4", "-k", "uvicorn_worker.UvicornWorker", \
-     "--bind", "0.0.0.0:8000", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+     "--bind", "0.0.0.0:8000"]
 ```
 
-### Pattern 3: Terraform — AWS Infrastructure (FastAPI)
-
-> **Excerpt** — the block below references variables (`var.aws_region`, `var.app_name`,
-> `var.ecr_repository_url`, `var.image_tag`, `var.environment`, `var.desired_count`,
-> `var.public_subnet_ids`, `var.private_subnet_ids`, `var.vpc_id`) and resources
-> (`aws_iam_role.ecs_execution`, `aws_iam_role.ecs_task`, `aws_cloudwatch_log_group.this`,
-> `aws_ssm_parameter.db_url`, `aws_ssm_parameter.secret_key`, `aws_security_group.alb`,
-> `aws_security_group.ecs_tasks`, `aws_lb_listener.this`) that are defined in
-> companion files (`variables.tf`, `iam.tf`, `networking.tf`, `alb.tf`, etc.).
-> Treat it as an illustrative fragment — wire up the missing definitions before
-> applying.
+### Pattern 3: Terraform — AWS Infrastructure
 
 ```hcl
-# main.tf — excerpt (requires variable/resource definitions in companion files)
+# main.tf — ECS Fargate deployment
 terraform {
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
-    }
+    aws = { source = "hashicorp/aws", version = "~> 6.0" }
   }
-  required_version = ">= 1.10"  # S3-native state locking (use_lockfile) needs >= 1.10
+  required_version = ">= 1.10"
 
   backend "s3" {
     bucket = "myapp-terraform-state"
     key    = "production/terraform.tfstate"
     region = "us-east-1"
-    # S3-native locking via conditional writes (bucket versioning must be ON).
-    # On Terraform < 1.10 use dynamodb_table = "myapp-terraform-locks" instead
-    # (DynamoDB-based locking is deprecated in newer Terraform versions).
     use_lockfile = true
   }
 }
 
-provider "aws" {
-  region = var.aws_region
-}
-
-# ECS cluster
 resource "aws_ecs_cluster" "this" {
   name = "${var.app_name}-cluster"
-
   setting {
     name  = "containerInsights"
     value = "enabled"
   }
 }
 
-# ECS task definition
 resource "aws_ecs_task_definition" "this" {
   family                   = var.app_name
   network_mode             = "awsvpc"
@@ -312,79 +226,33 @@ resource "aws_ecs_task_definition" "this" {
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
-  container_definitions = jsonencode([
-    {
-      name      = var.app_name
-      image     = "${var.ecr_repository_url}:${var.image_tag}"
-      essential = true
-      portMappings = [
-        {
-          containerPort = 8000
-          protocol      = "tcp"
-        }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.this.name
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "ecs"
-        }
+  container_definitions = jsonencode([{
+    name      = var.app_name
+    image     = "${var.ecr_repository_url}:${var.image_tag}"
+    essential = true
+    portMappings = [{ containerPort = 8000, protocol = "tcp" }]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.this.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "ecs"
       }
-      healthCheck = {
-        # python:3.12-slim (Pattern 2) ships no curl — reuse the Dockerfile's
-        # urllib probe, otherwise the healthcheck fails forever and the ECS
-        # service never stabilizes.
-        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
-        interval    = 30
-        timeout     = 5
-        retries     = 3
-        startPeriod = 60
-      }
-      environment = [
-        { name = "APP_ENV", value = var.environment }
-      ]
-      secrets = [
-        {
-          name      = "DATABASE_URL"
-          valueFrom = aws_ssm_parameter.db_url.arn
-        },
-        {
-          name      = "SECRET_KEY"
-          valueFrom = aws_ssm_parameter.secret_key.arn
-        }
-      ]
     }
-  ])
+    healthCheck = {
+      command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 60
+    }
+    secrets = [
+      { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.db_url.arn },
+      { name = "SECRET_KEY", valueFrom = aws_ssm_parameter.secret_key.arn }
+    ]
+  }])
 }
 
-# Application Load Balancer
-resource "aws_lb" "this" {
-  name               = "${var.app_name}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = var.public_subnet_ids
-}
-
-resource "aws_lb_target_group" "this" {
-  name        = "${var.app_name}-tg"
-  port        = 8000
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
-
-  health_check {
-    path                = "/health"
-    protocol            = "HTTP"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 3
-    unhealthy_threshold = 3
-  }
-}
-
-# ECS Service with rolling deployment
 resource "aws_ecs_service" "this" {
   name            = "${var.app_name}-service"
   cluster         = aws_ecs_cluster.this.id
@@ -392,64 +260,14 @@ resource "aws_ecs_service" "this" {
   desired_count   = var.desired_count
   launch_type     = "FARGATE"
 
-  network_configuration {
-    subnets         = var.private_subnet_ids
-    security_groups = [aws_security_group.ecs_tasks.id]
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.this.arn
-    container_name   = var.app_name
-    container_port   = 8000
-  }
-
-  deployment_controller {
-    type = "ECS"  # Rolling updates
-  }
-
   deployment_circuit_breaker {
     enable   = true
     rollback = true
   }
-
-  depends_on = [aws_lb_listener.this]
 }
 ```
 
-### Pattern 4: GitOps — ArgoCD
-
-```yaml
-# argocd-app.yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: myapp
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/org/myapp-infra
-    targetRevision: main
-    path: k8s/production
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: myapp
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-      - PrunePropagationPolicy=foreground
-  # Health check
-  ignoreDifferences:
-    - group: apps
-      kind: Deployment
-      jsonPointers:
-        - /spec/replicas
-```
-
-### Pattern 5: Kubernetes Deployment (with HPA)
+### Pattern 4: Kubernetes Deployment with HPA
 
 ```yaml
 # k8s/deployment.yaml
@@ -457,8 +275,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: myapp
-  labels:
-    app: myapp
 spec:
   replicas: 3
   selector:
@@ -476,11 +292,6 @@ spec:
     spec:
       containers:
         - name: myapp
-          # Placeholder tag — the deploy pipeline pins the commit SHA at deploy
-          # time (see "Pinning the image tag" below). A static manifest CANNOT
-          # contain ${{ github.sha }}: GitHub expressions only interpolate
-          # inside workflow runs, so kubectl/ArgoCD would see the literal
-          # string (an invalid image ref). Use SHA-based tags, never :latest.
           image: ghcr.io/org/myapp:stable
           ports:
             - containerPort: 8000
@@ -522,24 +333,32 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: 80
 ```
 
-**Pinning the image tag at deploy time** — the workflow run expands `${{ github.sha }}` and rewrites the manifest's placeholder before apply/commit:
+### Pattern 5: GitOps — ArgoCD
 
 ```yaml
-# Deploy job step (inside a workflow run, where the expression IS interpolated).
-# GitOps variant: commit the updated kustomization.yaml and let ArgoCD sync it.
-- name: Pin image tag and deploy
-  run: |
-    cd k8s/production
-    kustomize edit set image ghcr.io/org/myapp:${{ github.sha }}
-    kustomize build . | kubectl apply -f -
+# argocd-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: myapp
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/org/myapp-infra
+    targetRevision: main
+    path: k8s/production
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: myapp
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
 ```
 
 ### Pattern 6: Canary Deployment
@@ -555,115 +374,25 @@ spec:
   strategy:
     canary:
       steps:
-        - setWeight: 10       # 10% traffic to new
+        - setWeight: 10
         - pause: {duration: 5m}
-        - setWeight: 25       # 25% traffic
+        - setWeight: 25
         - pause: {duration: 10m}
-        - setWeight: 50       # 50% traffic
+        - setWeight: 50
         - pause: {duration: 15m}
-        - setWeight: 75       # 75% traffic
+        - setWeight: 75
         - pause: {duration: 10m}
-        # Auto-analysis before 100%
         - analysis:
             templates:
               - templateName: success-rate
-        - setWeight: 100      # Full rollout
-      # Auto-rollback if analysis fails
+        - setWeight: 100
       analysis:
         templates:
           - templateName: error-rate
-          - templateName: latency-p95
 ```
 
-### Pattern 7: Pipeline Monitoring & Deployment Health
+### Pattern 7: Security Scanning
 
-```yaml
-# CI/CD pipeline metrics (GitHub Actions example)
-- name: Pipeline duration tracking
-  run: |
-    echo "PIPELINE_DURATION=$SECONDS" >> "$GITHUB_ENV"
-
-# Deployment health checks
-- name: Post-deploy health check
-  run: |
-    for i in $(seq 1 10); do
-      status=$(curl -sf "$HEALTH_URL/health" -o /dev/null -w '%{http_code}')
-      [ "$status" = "200" ] && echo "Healthy" && exit 0
-      sleep 5
-    done
-    echo "Health check failed" && exit 1
-
-# Rollback trigger on failure
-- name: Automatic rollback
-  if: failure()
-  run: |
-    kubectl rollout undo deployment/$APP_NAME -n $NAMESPACE
-    echo "Rolled back to previous revision"
-```
-
-**Key pipeline metrics:**
-- Build duration and trend
-- Deployment frequency
-- Change failure rate
-- Mean time to recovery (MTTR)
-- Test execution time breakdown
-
-> **See also**: `observability-patterns` — Application-level Prometheus metrics, custom histograms, SLO monitoring.
-
-### Node.js CI Pipeline (GitHub Actions)
-```yaml
-name: Node.js CI
-on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [20, 22]
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: testdb
-          POSTGRES_PASSWORD: testpass
-        ports: ['5432:5432']
-        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v5
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test -- --coverage
-      - uses: actions/upload-artifact@v4
-        with:
-          name: coverage-node${{ matrix.node-version }}
-          path: coverage/
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          tags: app:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-```
-
-### SAST/DAST Security Scanning
 ```yaml
 # .github/workflows/security.yml
 name: Security Scan
@@ -674,179 +403,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Semgrep — static analysis
-      # (semgrep/semgrep-action is deprecated — install the CLI and run
-      #  `semgrep ci`; add SEMGREP_APP_TOKEN env for the Semgrep AppSec Platform)
-      # IMPORTANT: use `pipx install semgrep` (not `pip install`) — ubuntu-24.04
-      # enforces PEP 668 (externally-managed-environment), so system `pip install`
-      # fails. `pipx` is preinstalled on the runner and uses an isolated venv.
       - name: Run Semgrep
-        env:
-          SEMGREP_RULES: >-
-            p/python
-            p/owasp-top-ten
-            p/security-audit
         run: pipx install semgrep && semgrep ci
-
-      # Bandit — Python-specific security linter
-      - uses: actions/setup-python@v6
-        with: { python-version: '3.12' }
-      - run: pip install bandit
-      - run: bandit -r src/ -f json -o bandit-report.json
-
-      # Secret scanning
+      - name: Run Bandit
+        run: pip install bandit && bandit -r src/ -f json -o bandit-report.json
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # gitleaks-action v2 requires a license key for organization repos;
-          # see https://github.com/gitleaks/gitleaks-action#usage
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   container-scan:
     runs-on: ubuntu-latest
-    # upload-sarif requires security-events: write to push SARIF results to
-    # the repo's Security tab; contents: read is the checkout default, stated
-    # explicitly for clarity.
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
-
-      # Runners are ephemeral — an image built in another workflow/job does NOT
-      # exist here; build it locally first, then scan the local ref.
       - name: Build image to scan
         run: docker build -t app:${{ github.sha }} .
-
       - uses: aquasecurity/trivy-action@v0.29.0
         with:
           image-ref: app:${{ github.sha }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
-```
-
-### Database Migration in CI
-```yaml
-# Alembic migration check in CI
-  migration-check:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: migration_test
-          POSTGRES_PASSWORD: testpass
-        ports: ['5432:5432']
-    env:
-      # Job-level env — every alembic step below needs DATABASE_URL
-      DATABASE_URL: postgresql://postgres:testpass@localhost:5432/migration_test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with: { python-version: '3.12' }
-      - run: pip install -e ".[dev]"
-
-      # Apply all migrations FIRST — autogenerate must diff the models against
-      # the MIGRATED schema, not an empty database (against an empty schema it
-      # would emit the entire initial migration and always "detect" drift)
-      - name: Run migrations
-        run: alembic upgrade head
-
-      # Drift check: a fresh autogenerate against the migrated schema must be
-      # empty — any op.* call in the temp revision means uncommitted model changes
-      - name: Check autogenerate produces no changes
-        run: |
-          alembic revision --autogenerate -m "ci-drift-check" --rev-id ci_drift_check
-          drift_file=$(find alembic/versions -name '*ci_drift_check*')
-          if grep -qE '^[[:space:]]*op\.' "$drift_file"; then
-            echo "ERROR: Uncommitted migration detected — models changed without a migration."
-            echo "Run 'alembic revision --autogenerate' locally and commit the result."
-            rm -f "$drift_file"
-            exit 1
-          fi
-          rm -f "$drift_file"  # clean up the temp revision
-
-      # Test downgrade (optional — verify rollback works)
-      - name: Test downgrade
-        run: alembic downgrade -1
-```
-
-### GitLab CI Pipeline
-```yaml
-# .gitlab-ci.yml
-stages:
-  - lint
-  - test
-  - build
-  - deploy
-
-variables:
-  POSTGRES_DB: testdb
-  POSTGRES_USER: testuser
-  POSTGRES_PASSWORD: testpass
-  POSTGRES_HOST: postgres
-  POSTGRES_PORT: 5432
-
-lint:
-  stage: lint
-  image: python:3.12-slim
-  before_script:
-    - pip install --user pipx
-    - pipx install ruff
-    - pipx install mypy
-  script:
-    - ruff check src/
-    - mypy src/
-
-test:
-  stage: test
-  image: python:3.12-slim
-  services:
-    - name: postgres:17-alpine
-      alias: postgres
-  variables:
-    # App connects to the `postgres` service container at host `postgres`
-    # (not `localhost` — the container hostname is the service alias).
-    POSTGRES_USER: testuser
-    POSTGRES_PASSWORD: testpass
-    POSTGRES_DB: testdb
-    DATABASE_URL: postgresql://testuser:testpass@postgres:5432/testdb
-  before_script:
-    - python -m venv .venv
-    - source .venv/bin/activate
-    - pip install -e ".[dev]"
-  script:
-    - alembic upgrade head
-    - pytest --cov=src --cov-report=xml
-  artifacts:
-    reports:
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
-  coverage: '/TOTAL.*\s+(\d+%)$/'
-
-build:
-  stage: build
-  image: docker:28
-  services:
-    - docker:28-dind
-  script:
-    # Authenticate BEFORE push — otherwise: "denied: authentication required".
-    # CI_JOB_TOKEN variant: docker login -u gitlab-ci-token -p "$CI_JOB_TOKEN" "$CI_REGISTRY"
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
-    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
-  # `only`/`except` are deprecated (maintenance mode) — use `rules:`
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
 ```
 
 ## Best Practices
@@ -877,7 +458,7 @@ build:
 
 ## Context7 Integration
 
-When Context7 MCP tools are available in your session, use them to fetch up-to-date library documentation instead of relying on memory. Tool names vary by installation (e.g. `mcp__context7__resolve-library-id` / `mcp__context7__query-docs`, or plugin-prefixed variants such as `mcp__plugin_context7_context7__*`) — check the available-tools listing for the exact names. Always resolve the library ID first; the IDs in the table below are examples and may change.
+When Context7 MCP tools are available, use them to fetch up-to-date library documentation.
 
 | Library | Context7 ID | When to Query |
 |---------|-------------|---------------|
@@ -886,3 +467,10 @@ When Context7 MCP tools are available in your session, use them to fetch up-to-d
 | Terraform | `/websites/developer_hashicorp_terraform` | Provider config, modules |
 | Kubernetes | `/kubernetes/website` | Deployment manifests, HPA |
 | ArgoCD | `/argoproj/argo-cd` | GitOps configuration |
+
+> **See also**: `observability-patterns` — Application-level Prometheus metrics, SLO monitoring.
+
+## Additional Resources
+
+- **Advanced patterns:** See [`advanced.md`](advanced.md) for deep dives, edge cases, and advanced techniques
+- **Code examples:** See [`examples.md`](examples.md) for complete working examples and templates

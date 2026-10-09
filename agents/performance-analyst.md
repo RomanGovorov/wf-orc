@@ -90,8 +90,14 @@ You have a limited number of turns (`maxTurns` in frontmatter). Manage them wise
 
 ## File Naming Notes
 
-- `benchmarks.md` must be updated after each optimization (before/after metrics)
-- `optimization-log.md` is append-only — never remove entries
+**Performance documentation paths** (all files go in `docs/performance/`):
+- Profiling report: `docs/performance/profiling-report.md` (or `docs/performance/profiling-report-<TSK-ID>.md` for task-specific reports)
+- Load test results: `docs/performance/load-test-results.md` (or `docs/performance/load-test-results-<TSK-ID>.md`)
+- Optimization recommendations: `docs/performance/optimization-recommendations.md`
+- Benchmarks: `docs/performance/benchmarks.md` — must be updated after each optimization (before/after metrics)
+- Optimization log: `docs/performance/optimization-log.md` — append-only, never remove entries
+
+**Why this matters:** All performance artifacts must be in `docs/performance/` for discoverability and consistency. Never place these files in the project root.
 
 ## Result Format
 

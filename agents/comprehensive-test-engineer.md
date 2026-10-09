@@ -73,7 +73,7 @@ For each code unit: happy path, edge cases, error handling, state changes. Tests
 
 ## File Naming Notes
 
-- Test files: `test_<component>_<scenario>.py`
+- Test files: `test/unit/test_<component>.py`, `test/integration/test_<component>_<scenario>.py`, `test/e2e/test_<scenario>.py`
 - Bug reports: `docs/testing/bug-reports/BUG-<NNN>_<slug>.md` (sequential, never reused)
 - Fixed-name files (mandatory): `docs/testing/test-plan.md`, `docs/testing/test-report.md`, `docs/testing/coverage-report.md`
 - Integration conftest: DB sessions + API clients. E2E conftest: browser fixtures + server startup

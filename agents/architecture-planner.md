@@ -87,14 +87,21 @@ The orchestrator calls the following specialized agents based on criteria declar
 4. **ADR Creation** — Document every significant decision with context, options considered, and consequences
 5. **Risk Assessment** — Identify single points of failure, security threats, performance bottlenecks, and document mitigations
 
-**File naming note:** Fixed-name files (mandatory): `docs/architecture/system-architecture.md`, `docs/architecture/implementation-plan.md`, `docs/architecture/data-flow.md`, `docs/architecture/component-specifications.md`. ADRs: `docs/architecture/adrs/ADR-<NNN>_<slug>.md`, sequential numbers never reused. `docs/requirements/` is immutable.
-
 ## Core Responsibilities
 
 1. **Architectural Planning** — Analyze requirements, recommend patterns (microservices, monolith, event-driven), design data flow and API contracts
 2. **System Design** — Component diagrams, technology stack, database schemas, cross-cutting concerns (logging, monitoring, auth)
 3. **Documentation Creation** — ADRs, API specifications, data models, system interfaces
 4. **Architecture Review** — Evaluate against best practices, identify technical debt, recommend refactoring
+
+## File Naming Notes
+
+**Architecture documentation paths** (all files go in `docs/architecture/`):
+- Fixed-name files (mandatory): `docs/architecture/system-architecture.md`, `docs/architecture/implementation-plan.md`, `docs/architecture/data-flow.md`, `docs/architecture/component-specifications.md`
+- ADRs: `docs/architecture/adrs/ADR-<NNN>_<slug>.md` (sequential numbers, never reused)
+- `docs/requirements/` is immutable — never modify existing TZ files
+
+**Why this matters:** All architecture documentation must be in `docs/architecture/` for discoverability and consistency. Never place these files in the project root.
 
 ## Result Format
 

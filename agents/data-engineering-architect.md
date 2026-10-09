@@ -173,8 +173,15 @@ This result returns to `architecture-planner` via audit aggregation path like an
 
 ## File Naming Notes
 
-- `docs/data/data-models.md`, `pipeline-config.md`, `optimized-queries.md`, `infrastructure-requirements.md`
+**Data documentation paths** (all files go in `docs/data/`):
+- `docs/data/data-models.md`
+- `docs/data/pipeline-config.md`
+- `docs/data/optimized-queries.md`
+- `docs/data/infrastructure-requirements.md`
+- `docs/data/data-findings-report.md`
 - Findings: `docs/data/findings/PHASE1-<NNN>_<slug>.md`, `docs/data/findings/PHASE2-<NNN>_<slug>.md`
+
+**Why this matters:** All data architecture documentation must be in `docs/data/` for discoverability and consistency. Never place these files in the project root.
 
 ## Skills
 

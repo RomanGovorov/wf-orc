@@ -2,6 +2,23 @@
 .playwright-mcp/
 .qwen/
 .vscode/
-docs/
+# Ignore docs/ except reference
+docs/*
+!docs/reference/
+!docs/reference/**
 __pycache__/
 .env
+
+# Historical audit reports
+*-AUDIT*.md
+*-AUDIT-*.md
+audit-*.md
+FRESH-*.md
+INDEPENDENT-*.md
+FINAL-*.md
+WORKFLOW-*-AUDIT*.md
+TRANSITION-IDS-*.md
+WORKFLOW-ANALYSIS-*.md
+ALL-FIXES-*.md
+POST-FIX-*.md
+VERIFICATION-PROTOCOL-*.md

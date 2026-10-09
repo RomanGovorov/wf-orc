@@ -240,6 +240,7 @@ The orchestrator uses `task_type` to route to the correct next agent (project-ma
 ## File Naming Notes
 
 - TZ numbering: scan existing `docs/requirements/` for next available number
+- Interview state: `docs/context/interview-state.md` (mandatory for multi-round interviews)
 
 ## Skills
 

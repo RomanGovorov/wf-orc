@@ -3,7 +3,9 @@ name: pm-task-tracker
 description: Sync tasks and projects with external UI PM dashboard via REST API. Use when creating, updating, or closing tasks in the UI tracker, or when managing projects in the external service. Requires UI_PM_URL and UI_PM_API_KEY environment variables.
 priority: 5
 paths:
-  - skills/pm-task-tracker/SKILL.md
+  - "tasks/backlog.md"
+  - "tasks/active/**"
+  - "tasks/done/**"
 ---
 
 # PM Task Tracker — UI PM Dashboard Sync

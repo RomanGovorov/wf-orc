@@ -89,10 +89,19 @@ You have a limited number of turns (`maxTurns` in frontmatter). Manage them wise
 
 ## File Naming Notes
 
-- Fixed-name files (`deployment-manifest.md`, `ci-cd-pipeline.md`, `monitoring-dashboard.md`) are mandatory
-- Dockerfiles: multi-stage builds + non-root users
-- Terraform: `variables.tf` with descriptions
-- K8s: resource limits + health checks
+**Infrastructure documentation paths** (all files go in `docs/infrastructure/`):
+- Deployment manifest: `docs/infrastructure/deployment-manifest.md` (mandatory fixed name)
+- CI/CD pipeline: `docs/infrastructure/ci-cd-pipeline.md` (mandatory fixed name)
+- Monitoring dashboard: `docs/infrastructure/monitoring-dashboard.md` (mandatory fixed name)
+- Infrastructure review report: `docs/infrastructure/infrastructure-review.md` (or `docs/infrastructure/infrastructure-review-<TSK-ID>.md` for task-specific reviews)
+
+**Infrastructure code paths** (code files, not documentation):
+- Dockerfiles: `Dockerfile` in project root (multi-stage builds + non-root users)
+- Terraform: `infrastructure/terraform/` directory with `variables.tf` (with descriptions)
+- Kubernetes manifests: `infrastructure/k8s/` directory (resource limits + health checks)
+- Docker Compose: `docker-compose.yml` in project root
+
+**Why this matters:** All infrastructure documentation must be in `docs/infrastructure/` for discoverability. Infrastructure code (Dockerfiles, Terraform, K8s) goes in dedicated directories. Never place documentation files in the project root.
 
 ## Result Format
 

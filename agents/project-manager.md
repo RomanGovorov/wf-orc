@@ -125,7 +125,18 @@ When documentation is approved (or forced pass at iteration ≥ 3):
 
 ## File Naming Notes
 
-- **Task ID format**: `TSK-<NNN>` prefix
+**Project management documentation paths**:
+- Task ID format: `TSK-<NNN>` prefix
+- Workflow completion report: `docs/workflow/workflow-complete.md` (or `docs/workflow/workflow-complete-<TSK-ID>.md` for task-specific completion reports)
+- Document review state: `docs/context/doc-review-state.md` (mandatory fixed name for multi-round doc reviews)
+
+**Task management paths**:
+- Task files: `tasks/active/TSK-<NNN>_<slug>.md`
+- Completed tasks: `tasks/done/TSK-<NNN>_<slug>.md`
+- Archived tasks: `tasks/archive/`
+- Product backlog: `tasks/backlog.md`
+
+**Why this matters:** Workflow completion reports must be in `docs/workflow/` for discoverability. Task files must be in `tasks/` subdirectories for proper tracking. Never place documentation files in the project root.
 
 ## Result Format
 

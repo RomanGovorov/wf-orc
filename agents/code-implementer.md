@@ -143,6 +143,13 @@ Code clarity (self-documenting), robust error handling, performance awareness, m
 - [ ] All relevant tests pass
 - [ ] Code compiles/builds successfully
 
+## File Naming Notes
+
+**Implementation documentation paths** (all files go in `docs/implementation/`):
+- Implementation report: `docs/implementation/implementation-report.md` (or `docs/implementation/implementation-report-<TSK-ID>.md` for task-specific reports)
+
+**Why this matters:** All implementation reports must be in `docs/implementation/` for discoverability and consistency. Never place these files in the project root.
+
 ## Result Format
 
 **Implementation complete:**

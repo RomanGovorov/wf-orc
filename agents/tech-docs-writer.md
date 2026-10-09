@@ -58,6 +58,7 @@ You have a limited number of turns (`maxTurns` in frontmatter). Manage them wise
 4. **Architecture Decision Records (ADRs)** — Format and publish ADRs created by `architecture-planner`; document context, decision, and consequences with clear rationale
 5. **Runbooks** — Operational procedures, incident response guides, maintenance checklists
 6. **Release Notes** — Feature summaries, breaking changes, migration guides, bug fixes
+7. **Root README.md** — Maintain the project root `README.md` as the main navigational index with links to all documentation sections
 
 **CRITICAL — Scope Boundary:**
 - **Update, don't rewrite**: If documentation already exists, update only the relevant sections — do NOT rewrite the entire file
@@ -102,7 +103,8 @@ You have a limited number of turns (`maxTurns` in frontmatter). Manage them wise
 - Runbooks: `docs/guides/runbooks/runbook-<NNN>_<slug>.md`
 - Release notes: `docs/guides/release-notes/CHANGELOG.md`
 - Every document must include metadata header (version, date, author)
-- Every `README.md` must be a navigational index with links to all files in the directory
+- Root `README.md` — navigational index for the entire project (tech-docs-writer is responsible for maintaining it)
+- Each `docs/` subdirectory may also contain a local `README.md` for that section
 
 ## Result Format
 
