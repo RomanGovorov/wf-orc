@@ -1,19 +1,20 @@
 {
   "date": "2026-10-09",
+  "version": "0.6.4",
   "skills_split": 12,
   "files_created": 35,
   "skills": [
-    {"name": "javascript-typescript-professional", "original": 1179, "skill_md": 334, "advanced_md": 442, "examples_md": 361},
-    {"name": "kotlin-professional", "original": 1049, "skill_md": 322, "advanced_md": 410, "examples_md": 286},
-    {"name": "database-patterns", "original": 1010, "skill_md": 315, "advanced_md": 328, "examples_md": 323},
-    {"name": "java-professional", "original": 913, "skill_md": 369, "advanced_md": 330, "examples_md": 339},
-    {"name": "python-professional", "original": 899, "skill_md": 366, "advanced_md": 401, "examples_md": 603},
-    {"name": "api-design-principles", "original": 899, "skill_md": 367, "advanced_md": 424, "examples_md": 633},
-    {"name": "observability-patterns", "original": 889, "skill_md": 428, "advanced_md": 509, "examples_md": 564},
-    {"name": "ci-cd-patterns", "original": 888, "skill_md": 476, "advanced_md": 466, "examples_md": 662},
-    {"name": "secure-coding-patterns", "original": 790, "skill_md": 277, "advanced_md": 337, "examples_md": 339},
-    {"name": "performance-optimization", "original": 728, "skill_md": 244, "advanced_md": 343, "examples_md": 361},
-    {"name": "testing-patterns", "original": 719, "skill_md": 301, "advanced_md": 293, "examples_md": 406},
-    {"name": "git-workflow-patterns", "original": 630, "skill_md": 247, "advanced_md": 334, "examples_md": null}
+    {"name": "javascript-typescript-professional", "skill_md": 334, "advanced_md": 447, "examples_md": 361},
+    {"name": "kotlin-professional", "skill_md": 322, "advanced_md": 417, "examples_md": 293},
+    {"name": "database-patterns", "skill_md": 315, "advanced_md": 335, "examples_md": 330},
+    {"name": "java-professional", "skill_md": 369, "advanced_md": 337, "examples_md": 346},
+    {"name": "python-professional", "skill_md": 366, "advanced_md": 401, "examples_md": 603},
+    {"name": "api-design-principles", "skill_md": 367, "advanced_md": 424, "examples_md": 633},
+    {"name": "observability-patterns", "skill_md": 428, "advanced_md": 509, "examples_md": 564},
+    {"name": "ci-cd-patterns", "skill_md": 476, "advanced_md": 466, "examples_md": 662},
+    {"name": "secure-coding-patterns", "skill_md": 277, "advanced_md": 344, "examples_md": 346},
+    {"name": "performance-optimization", "skill_md": 244, "advanced_md": 350, "examples_md": 368},
+    {"name": "testing-patterns", "skill_md": 301, "advanced_md": 300, "examples_md": 413},
+    {"name": "git-workflow-patterns", "skill_md": 247, "advanced_md": 339, "examples_md": 414}
   ]
 }

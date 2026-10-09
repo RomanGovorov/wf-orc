@@ -384,18 +384,18 @@ Run project verification (see [Project Verification](#project-verification) belo
 Update version in all plugin manifests and test templates:
 
 ```bash
-# Update version in JSON manifests (example: 0.6.0 → 0.6.1)
-sed -i 's/"version": "0.6.0"/"version": "0.6.1"/g' \
+# Update version in JSON manifests (example: 0.6.3 → 0.6.4)
+sed -i 's/"version": "0.6.3"/"version": "0.6.4"/g' \
   gemini-extension.json \
   .claude-plugin/plugin.json \
   .codex-plugin/plugin.json \
   .cursor-plugin/plugin.json
 
 # Update version in YAML manifest
-sed -i 's/^version: 0.6.0/version: 0.6.1/' .hermes-plugin/plugin.yaml
+sed -i 's/^version: 0.6.3/version: 0.6.4/' .hermes-plugin/plugin.yaml
 
 # Update version in test templates
-sed -i 's/wf-orc version:\*\* 0.6.0/wf-orc version:** 0.6.1/g' \
+sed -i 's/wf-orc version:\*\* 0.6.3/wf-orc version:** 0.6.4/g' \
   tests/qwen-compatibility-test.md \
   tests/claude-compatibility-test.md
 ```

@@ -332,3 +332,8 @@ git reset HEAD~1
 # Discard all changes (destructive!)
 git reset --hard HEAD~1
 ```
+
+## Additional Resources
+
+- **Core patterns:** See [`SKILL.md`](SKILL.md) for essential patterns
+- **Code examples:** See [`examples.md`](examples.md) for complete working examples

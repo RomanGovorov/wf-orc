@@ -440,3 +440,8 @@ async function fetchBatch(urls: string[], concurrency = 10) {
   return results;
 }
 ```
+
+## Additional Resources
+
+- **Core patterns:** See [`SKILL.md`](SKILL.md) for essential patterns
+- **Code examples:** See [`examples.md`](examples.md) for complete working examples
