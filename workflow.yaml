@@ -1,5 +1,5 @@
 # Agent Workflow DSL - Single Source of Truth
-version: "0.6.4"
+version: "0.6.5"
 #
 # Conventions:
 # - Forced-pass: when iteration >= max (3), the reviewing agent MUST pass
@@ -34,7 +34,9 @@ version: "0.6.4"
 # │                             │                              │ NOTE: needs_user_input=true →      │
 # │                             │                              │ apply P1 relay BEFORE routing      │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
-# │ project-manager             │ T01 → architecture-planner   │ backlog_approved                    │
+# │ project-manager             │ T01 → architecture-planner   │ backlog_approved AND NOT           │
+# │                             │                              │ express_lane                        │
+# │ project-manager             │ T01_EXPRESS → code-implementer│ backlog_approved AND express_lane  │
 # │ project-manager             │ T70_REV → tech-docs-writer   │ documentation_needs_revision AND   │
 # │                             │                              │ documentation_iteration < 3         │
 # │ project-manager             │ T_PM_COMPLETE → _terminal    │ documentation_complete OR          │
@@ -48,6 +50,11 @@ version: "0.6.4"
 # │ architecture-planner        │ T12c → data-engineering-architect     │ architecture doc mentions data/    │
 # │                             │                                       │ pipeline needs AND not all audits  │
 # │                             │                                       │ returned yet                       │
+# │                             │ NOTE: T12a/b/c are parallel_start —  │
+# │                             │ launch ALL requested audits simul-   │
+# │                             │ taneously, not sequentially. Each    │
+# │                             │ returns via T23a/b/c to arch-planner │
+# │                             │ for aggregation.                     │
 # │ architecture-planner        │ T13 → code-implementer       │ all audits returned (or none       │
 # │                             │                              │ needed) AND NOT deployment_only    │
 # │ architecture-planner        │ T_AGG_TO_DEVOPS → devops-infrastructure-engineer │ deployment_only │
@@ -200,6 +207,9 @@ agents:
     TERMINAL TRANSITION: T_PM_COMPLETE fires when documentation is complete OR
     documentation_iteration >= 3 (forced pass). The orchestrator recognizes
     `_terminal` as workflow end. PM MUST set workflow_complete=true in the result.
+    EXPRESS LANE: PM may set express_lane=true for simple tasks (≤5 turns, single
+    file, no architecture impact) — routes T01_EXPRESS directly to code-implementer,
+    skipping architecture-planner, audits, devops, tech-docs.
 - id: architecture-planner
   name: architecture-planner
   max_iterations: null
@@ -325,13 +335,33 @@ transitions:
 - id: T01
   from: project-manager
   to: architecture-planner
-  condition: backlog_approved
+  condition: backlog_approved AND NOT express_lane
   artifacts:
   - product_backlog
   - user_stories
   - sprint_backlog
   type: serial
   process: main_workflow
+# T01_EXPRESS: Express Lane — PM → code-implementer (skips architecture-planner, audits, devops, tech-docs).
+# Only fires when PM sets express_lane=true (single file, ≤5 turns, no architecture impact).
+# Express Lane full route: PM → code-implementer → code-reviewer → comprehensive-test-engineer → PM.
+# After code-reviewer in express mode: orchestrator fires T_EXPRESS_TEST (not T45a/b).
+# After comprehensive-test-engineer in express mode: orchestrator fires T_EXPRESS_DONE (not T51_6).
+- id: T01_EXPRESS
+  from: project-manager
+  to: code-implementer
+  condition: backlog_approved AND express_lane
+  artifacts:
+  - product_backlog
+  - user_stories
+  - sprint_backlog
+  type: serial
+  process: express_lane
+  note: >
+    Express Lane skips architecture-planner, Phase 1 audits, devops-infrastructure-engineer,
+    and tech-docs-writer. The orchestrator tracks express_lane=true in workflow state and
+    uses T_EXPRESS_TEST / T_EXPRESS_DONE instead of standard transitions after code-reviewer
+    and comprehensive-test-engineer respectively.
 - id: T12a
   from: architecture-planner
   to: security-auditor
@@ -645,6 +675,41 @@ transitions:
   - adrs
   type: parallel_start
   process: main_workflow
+# T_EXPRESS_TEST: Express Lane — code-reviewer → comprehensive-test-engineer (skips performance-analyst).
+# Only fired by the orchestrator when express_lane=true in workflow state.
+# In standard workflow, code-reviewer uses T45a/T45b (parallel_start: test + performance).
+# In express lane, only test runs — performance analysis is skipped for speed.
+- id: T_EXPRESS_TEST
+  from: code-reviewer
+  to: comprehensive-test-engineer
+  condition: code_review_pass AND express_lane
+  artifacts:
+  - source_code
+  - unit_tests
+  - implementation_report
+  - code_review_report
+  type: serial
+  process: express_lane
+  note: >
+    Express Lane only. Skips performance-analyst. The orchestrator fires this instead of
+    T45a/T45b when express_lane=true in workflow state.
+# T_EXPRESS_DONE: Express Lane — comprehensive-test-engineer → project-manager (skips devops, tech-docs).
+# Only fired by the orchestrator when express_lane=true in workflow state.
+# In standard workflow, comprehensive-test-engineer uses T51_6 → devops-infrastructure-engineer.
+- id: T_EXPRESS_DONE
+  from: comprehensive-test-engineer
+  to: project-manager
+  condition: (tests_pass OR test_iteration >= 3 OR NOT bugs_found) AND express_lane
+  artifacts:
+  - testing_report
+  - coverage_metrics
+  - tested_application
+  type: serial
+  process: express_lane
+  note: >
+    Express Lane only. Skips devops-infrastructure-engineer and tech-docs-writer.
+    PM completes the workflow directly after reviewing test results.
+    The orchestrator fires this instead of T51_6 when express_lane=true.
 - id: T51_3
   from: comprehensive-test-engineer
   to: code-implementer
@@ -957,6 +1022,21 @@ processes:
   - devops-infrastructure-engineer
   - tech-docs-writer
   - project-manager
+- id: express_lane
+  name: Express Lane (Fast Track)
+  description: >
+    Optimized route for trivial tasks (single file, ≤5 turns, no architecture impact).
+    PM detects express_lane criteria and sets express_lane=true. The orchestrator tracks
+    this flag in workflow state and uses express-specific transitions (T01_EXPRESS,
+    T_EXPRESS_TEST, T_EXPRESS_DONE) instead of standard ones.
+    Skips: architecture-planner, Phase 1 audits, performance-analyst, devops, tech-docs.
+    Route: PM → code-implementer → code-reviewer → comprehensive-test-engineer → PM (4 agents).
+  steps:
+  - project-manager
+  - code-implementer
+  - code-reviewer
+  - comprehensive-test-engineer
+  - project-manager
 - id: research_workflow
   name: Research Workflow
   description: >
@@ -1141,39 +1221,24 @@ file_conventions:
       - architecture: Architecture documents, ADRs, data flow diagrams, component specifications
         nested:
         - adrs: ADR-<NNN>_<slug>.md files
-        - components: Per-component documentation
-      - security: Threat models, security requirements, checklists, findings
-        nested:
-        - findings: PHASE1-<NNN>_<slug>.md (initial audit), PHASE2-<NNN>_<slug>.md (verification)
-      - ui-ux: UI specifications, accessibility reports, user flow diagrams
-        nested:
-        - findings: PHASE1/PHASE2 audit findings
-      - data: Data models, pipeline configurations, optimized queries, data dictionary
-        nested:
-        - findings: PHASE1/PHASE2 audit findings
-      - testing: Test plans, test reports, coverage reports
-        nested:
-        - bug-reports: BUG-<NNN>_<slug>.md files
-      - performance: Profiling reports, load test results, benchmarks, optimization log
-      - devops: Deployment manifests, CI/CD configs, monitoring dashboards
-        nested:
-        - dockerfiles: Docker build files
-        - terraform: IaC configurations
-        - kubernetes: K8s manifests
-      - guides: API docs, user guides, runbooks, tutorials, release notes
+      - security: Threat models, security requirements, checklists (findings → .wf-orc/artifacts/security/findings/)
+      - ui-ux: UI specifications, accessibility reports, user flow diagrams (findings → .wf-orc/artifacts/ui-ux/findings/)
+      - data: Data models, pipeline configurations, optimized queries (findings → .wf-orc/artifacts/data/findings/)
+      - testing: Test plans (test reports, coverage reports, bug reports → .wf-orc/artifacts/testing/)
+      - performance: Benchmarks, optimization recommendations (profiling reports, load test results, optimization log → .wf-orc/artifacts/performance/)
+      - infrastructure: Deployment manifests, CI/CD configs, monitoring dashboards (devops-infrastructure-engineer final docs)
+      - guides: API docs, user guides, runbooks, release notes
         nested:
         - api: API documentation, openapi.yaml
         - user: User guides
         - runbooks: Operational runbooks
-        - tutorials: Step-by-step tutorials
-        - release-notes: CHANGELOG.md, RELEASE-<version>.md
-      - reviews: Code review reports (review-<TSK-ID>.md)
+        - release-notes: CHANGELOG.md
     tasks:
       description: Task management
       subdirectories:
       - active: Tasks currently in progress
       - done: Completed tasks
-      - archive: Cancelled or frozen tasks
+      - archive: Archived completed tasks (older than 7 days) and cancelled/frozen tasks
       root_files:
       - backlog.md: Single backlog file for all tasks across all sprints
     test:
@@ -1224,6 +1289,20 @@ file_conventions:
   - rule: Other agents update their task file in tasks/active/ and signal project-manager via handoff
       protocol
   agent_file_responsibilities:
+  - agent: business-analyst
+    creates:
+    - docs/context/project-profile.md
+    - docs/context/stakeholders.md
+    - docs/context/infrastructure.md
+    - docs/context/constraints.md
+    - docs/context/existing-systems.md
+    - docs/context/non-functional.md
+    - docs/requirements/TZ-<NNN>_<slug>.md (new revision, never modifies existing)
+    - docs/requirements/cost-estimation.md (research workflow only)
+    - .wf-orc/artifacts/context/interview-state.md (working artifact)
+    reads:
+    - docs/context/ (checks if context already exists)
+    - docs/requirements/ (checks existing TZ revisions)
   - agent: project-manager
     creates:
     - tasks/backlog.md (maintains)
@@ -1250,7 +1329,7 @@ file_conventions:
     - docs/security/threat-model.md
     - docs/security/security-requirements.md
     - docs/security/security-checklist.md
-    - docs/security/findings/PHASE*-*.md
+    - .wf-orc/artifacts/security/findings/PHASE*-*.md (working artifact)
     reads:
     - docs/architecture/ (architecture documents)
     updates:
@@ -1260,18 +1339,18 @@ file_conventions:
     - docs/ui-ux/ui-spec.md
     - docs/ui-ux/accessibility-report.md
     - docs/ui-ux/user-flow-diagrams.md
-    - docs/ui-ux/findings/PHASE*-*.md
+    - .wf-orc/artifacts/ui-ux/findings/PHASE*-*.md (working artifact)
     reads:
     - docs/architecture/ (architecture documents)
     updates:
     - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
   - agent: data-engineering-architect
     creates:
-    - docs/data/pipeline-config.md
+    - docs/data/pipeline-configurations.md
     - docs/data/data-models.md
     - docs/data/optimized-queries.md
     - docs/data/infrastructure-requirements.md
-    - docs/data/findings/PHASE*-*.md
+    - .wf-orc/artifacts/data/findings/PHASE*-*.md (working artifact)
     reads:
     - docs/architecture/ (architecture documents)
     updates:
@@ -1280,17 +1359,18 @@ file_conventions:
     creates:
     - Source code (project-specific location)
     - test/unit/test_<component>_<scenario>.py
+    - .wf-orc/artifacts/implementation/implementation-report.md (working artifact)
     reads:
     - docs/architecture/ (architecture documents)
     - docs/security/ (security requirements)
     - docs/ui-ux/ (UI specifications)
     - docs/data/ (data models, pipeline configs)
-    - docs/reviews/ (code review reports)
+    - .wf-orc/artifacts/reviews/ (code review reports — working artifacts)
     updates:
     - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
   - agent: code-reviewer
     creates:
-    - docs/reviews/review-<TSK-ID>.md
+    - .wf-orc/artifacts/reviews/review-<TSK-ID>.md (working artifact)
     reads:
     - Source code (from code-implementer)
     - docs/architecture/adrs/ (ADRs)
@@ -1300,10 +1380,10 @@ file_conventions:
     creates:
     - test/integration/test_<feature>_<scenario>.py
     - test/e2e/test_<scenario>.py
-    - docs/testing/test-plan.md
-    - docs/testing/test-report.md
-    - docs/testing/coverage-report.md
-    - docs/testing/bug-reports/BUG-<NNN>_<slug>.md
+    - docs/testing/test-plan.md (final documentation)
+    - .wf-orc/artifacts/testing/test-report.md (working artifact)
+    - .wf-orc/artifacts/testing/coverage-report.md (working artifact)
+    - .wf-orc/artifacts/testing/bug-reports/BUG-<NNN>_<slug>.md (working artifact)
     reads:
     - Source code and unit tests
     - docs/requirements/ (for expected behavior)
@@ -1312,10 +1392,10 @@ file_conventions:
   - agent: performance-analyst
     creates:
     - test/performance/test_<scenario>.py
-    - docs/performance/profiling-report.md
-    - docs/performance/load-test-results.md
-    - docs/performance/benchmarks.md
-    - docs/performance/optimization-log.md
+    - .wf-orc/artifacts/performance/profiling-report.md (working artifact)
+    - .wf-orc/artifacts/performance/load-test-results.md (working artifact)
+    - docs/performance/benchmarks.md (final documentation)
+    - .wf-orc/artifacts/performance/optimization-log.md (working artifact)
     reads:
     - Source code and unit tests
     - docs/requirements/ (performance SLOs)
@@ -1323,13 +1403,13 @@ file_conventions:
     - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
   - agent: devops-infrastructure-engineer
     creates:
-    - docs/devops/deployment-manifest.md
-    - docs/devops/ci-cd-pipeline.md
-    - docs/devops/dockerfiles/
-    - docs/devops/monitoring-dashboard.md
+    - docs/infrastructure/deployment-manifest.md (final documentation)
+    - docs/infrastructure/ci-cd-pipeline.md (final documentation)
+    - docs/infrastructure/monitoring-dashboard.md (final documentation)
+    - .wf-orc/artifacts/infrastructure/infrastructure-review.md (working artifact)
     reads:
-    - docs/testing/ (test reports)
-    - docs/performance/ (load test results)
+    - docs/testing/ (test plan — final documentation)
+    - docs/performance/ (benchmarks — final documentation)
     updates:
     - tasks/active/TSK-<NNN>_<slug>.md (artifacts section)
   - agent: tech-docs-writer

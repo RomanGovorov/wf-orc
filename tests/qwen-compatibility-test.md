@@ -5,7 +5,7 @@
 
 ## Test Environment
 - **Qwen Code version:** [specify version]
-- **wf-orc version:** 0.6.4
+- **wf-orc version:** 0.6.5
 - **Test date:** [YYYY-MM-DD]
 - **Tester:** [name]
 

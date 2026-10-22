@@ -9,6 +9,10 @@ docs/*
 __pycache__/
 .env
 
+# Working artifacts from wf-orc agents (reviews, test reports, bug reports, findings, implementation reports)
+# Final documentation stays in docs/ — only working artifacts go here
+.wf-orc/artifacts/
+
 # Historical audit reports
 *-AUDIT*.md
 *-AUDIT-*.md

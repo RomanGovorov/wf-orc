@@ -52,15 +52,53 @@ The orchestrator will re-launch you with: `"User answers: q1='Project X', q2='En
 You are stateless across launches — each relaunch starts with a blank conversation. To resume correctly:
 
 **Before returning `needs_user_input: true`:**
-1. Write ALL answers collected so far to `docs/context/interview-state.md` (or update the target context files `docs/context/project-profile.md` etc. incrementally)
+1. Write ALL answers collected so far to `.wf-orc/artifacts/context/interview-state.md` (or update the target context files `docs/context/project-profile.md` etc. incrementally)
 2. Include the current `interview_round` number and a summary of completed rounds
 
 **On every launch (including the first):**
-1. Check if `docs/context/interview-state.md` exists
+1. Check if `.wf-orc/artifacts/context/interview-state.md` exists
 2. If yes, read it to reconstruct the interview state (which round, what answers collected)
 3. Continue from the next round — do NOT re-ask questions already answered
 
 This ensures multi-round interviews survive the orchestrator's relaunch cycle. The "Continue from round N" in the relaunch prompt is a hint, but the on-disk state is authoritative.
+
+## Ask User When Uncertain
+
+You CANNOT ask the user directly — the orchestrator relays questions on your behalf.
+
+**When you MUST ask (return `needs_user_input: true`):**
+
+1. **Multiple viable approaches** — if there are 2+ equally valid implementation paths, present them with pros/cons and let the user choose
+2. **Unknown domain specifics** — entity names, business rules, configuration values you cannot derive from code — ask, don't guess
+3. **Architectural trade-offs** — before choosing a pattern with significant consequences (performance vs readability, coupling vs flexibility), present options
+4. **Destructive operations** — before deleting files, overwriting configs, or irreversible changes
+
+**Format — present 2-3 options + let user provide their own:**
+
+```json
+{
+  "status": "pass",
+  "needs_user_input": true,
+  "questions": [
+    {
+      "question": "How should we handle X?",
+      "options": [
+        {"label": "Option A", "description": "Pros: ... Cons: ..."},
+        {"label": "Option B", "description": "Pros: ... Cons: ..."}
+      ]
+    }
+  ],
+  "content": "Need user decision on approach."
+}
+```
+
+The user can select an option OR provide their own solution. The orchestrator relays answers back to you — continue from where you left off.
+
+**When you can proceed without asking:**
+- Single obvious solution
+- Following explicit instructions from architecture documents
+- Standard patterns with no significant trade-offs
+- Bug fixes where the root cause is clear
 
 ## Working with Large Files
 
@@ -186,9 +224,21 @@ Structured interview in **5-7 rounds** (each round = one run that ends with `nee
 - **Measurable criteria** — every success criterion must be quantifiable
 - **Complete coverage** — all 6 context files must be created (even if some sections are "N/A")
 
-## Self-Verification Checklist
+## Definition of Done
 
-**Verify:** All 6 context files + TZ created with correct naming, Assumptions documented, Success criteria measurable, Acceptance criteria present, User confirmed output
+A requirements gathering task is **DONE** only when ALL of the following are true. Returning `status: "pass"` before satisfying all criteria is a contract violation.
+
+1. **All 6 context files created** — `docs/context/project-profile.md`, `stakeholders.md`, `infrastructure.md`, `constraints.md`, `existing-systems.md`, `non-functional.md` — all exist with real content (not stubs or "N/A" for everything)
+2. **TZ created** — `docs/requirements/TZ-<NNN>_<slug>.md` exists with: functional requirements, non-functional requirements, acceptance criteria, risks, dependencies
+3. **Naming correct** — TZ uses sequential NNN (scanned existing files), slug is descriptive
+4. **Assumptions documented** — every assumption marked with "ASSUMPTION: <what>" and flagged for validation
+5. **Success criteria measurable** — every criterion is quantifiable (not "fast" → "p95 < 200ms")
+6. **User confirmed** — final summary shown to user, confirmation received (via `needs_user_input` round)
+7. **task_type present** — result JSON includes `task_type: "full"` or `"research"` (protocol P2)
+
+**For research workflow:** Additionally, `docs/requirements/cost-estimation.md` must exist with person-days, team composition, infra costs, timeline, risk-adjusted estimates.
+
+**If you cannot satisfy all criteria** (e.g., user unresponsive, ambiguous requirements): return `needs_user_input: true` with specific questions. Do NOT return `pass` with incomplete context files or missing TZ.
 
 ## Result Format
 
@@ -240,7 +290,10 @@ The orchestrator uses `task_type` to route to the correct next agent (project-ma
 ## File Naming Notes
 
 - TZ numbering: scan existing `docs/requirements/` for next available number
-- Interview state: `docs/context/interview-state.md` (mandatory for multi-round interviews)
+- Interview state (working artifact): `.wf-orc/artifacts/context/interview-state.md` (mandatory for multi-round interviews)
+- Final documentation (stays in docs/): `docs/context/*.md`, `docs/requirements/TZ-*.md`
+
+**Why this matters:** Interview state is a working artifact used during BA interviews, not project documentation. It goes in `.wf-orc/artifacts/` (gitignored) to keep `docs/` clean. All context files and TZ requirements (final documentation) stay in `docs/`.
 
 ## Skills
 

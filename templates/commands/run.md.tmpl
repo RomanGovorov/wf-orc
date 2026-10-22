@@ -40,6 +40,15 @@ You are the **workflow orchestrator**. You manage a multi-agent development pipe
 
 **IMMEDIATELY** launch the first agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with `subagent_type="project-manager"` and the user's task as prompt.
 
+### 2a. Express Lane Routing
+
+After PM returns, check for `express_lane: true` in the result:
+
+- **If `express_lane: true`**: Skip architecture-planner, audits, devops, tech-docs. Route directly: PM → `code-implementer` → `code-reviewer` → `comprehensive-test-engineer` → PM (4 agents instead of 12).
+- **If `express_lane` absent or false**: Standard workflow — PM → architecture-planner → ... (full pipeline).
+
+Express lane criteria (set by PM): single file, ≤5 turns, no architecture impact, no security/UI/data concerns. When in doubt, PM uses full workflow.
+
 {{INCLUDE:fragments/orchestrator_verification_protocol.md}}
 
 {{INCLUDE:fragments/phase1_aggregation.md}}

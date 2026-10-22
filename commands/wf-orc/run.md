@@ -53,6 +53,15 @@ You are the **workflow orchestrator**. You manage a multi-agent development pipe
 
 **IMMEDIATELY** launch the first agent using the agent launch tool (platform-specific: `agent(subagent_type=...)` in Qwen Code, `Agent(...)` in Claude Code) with `subagent_type="project-manager"` and the user's task as prompt.
 
+### 2a. Express Lane Routing
+
+After PM returns, check for `express_lane: true` in the result:
+
+- **If `express_lane: true`**: Skip architecture-planner, audits, devops, tech-docs. Route directly: PM → `code-implementer` → `code-reviewer` → `comprehensive-test-engineer` → PM (4 agents instead of 12).
+- **If `express_lane` absent or false**: Standard workflow — PM → architecture-planner → ... (full pipeline).
+
+Express lane criteria (set by PM): single file, ≤5 turns, no architecture impact, no security/UI/data concerns. When in doubt, PM uses full workflow.
+
 ## Orchestrator Verification Protocol
 
 **CRITICAL:** After launching ANY agent, the orchestrator MUST verify the agent's status and result before making decisions. Never assume the agent tool is unavailable without explicit evidence.
@@ -389,7 +398,8 @@ The workflow ends when `project-manager` returns `workflow_complete: true` (afte
 
 | Current Agent | Transition | Next Agent | Condition = TRUE when |
 |---|---|---|---|
-| project-manager | T01 | architecture-planner | `backlog_approved` |
+| project-manager | T01 | architecture-planner | `backlog_approved AND NOT express_lane` |
+| project-manager | T01_EXPRESS | code-implementer | `backlog_approved AND express_lane` |
 | project-manager | T70_REV | tech-docs-writer | `documentation_needs_revision AND documentation_iteration < 3` |
 | project-manager | T_PM_COMPLETE | _terminal | `documentation_complete OR documentation_iteration >= 3` |
 | architecture-planner | T12a | security-auditor | `security_requirements_exist AND NOT all_audits_complete` |
@@ -417,9 +427,11 @@ The workflow ends when `project-manager` returns `workflow_complete: true` (afte
 | code-reviewer | T43_PERF | code-implementer | `perf_fix_review AND perf_fix_review_iteration < 3` |
 | code-reviewer | T45a | comprehensive-test-engineer | `code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3` |
 | code-reviewer | T45b | performance-analyst | `code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3` |
+| code-reviewer | T_EXPRESS_TEST | comprehensive-test-engineer | `code_review_pass AND express_lane` |
 | code-reviewer | T_DEVOPS_REVIEW_FAIL | devops-infrastructure-engineer | `NOT infrastructure_review_pass AND infrastructure_review_iteration < 3` |
 | code-reviewer | T_DEVOPS_REVIEW_PASS | devops-infrastructure-engineer | `infrastructure_review_pass` |
 | code-reviewer | T_DEVOPS_REVIEW_FORCE_PASS | devops-infrastructure-engineer | `NOT infrastructure_review_pass AND infrastructure_review_iteration >= 3` |
+| comprehensive-test-engineer | T_EXPRESS_DONE | project-manager | `(tests_pass OR test_iteration >= 3 OR NOT bugs_found) AND express_lane` |
 | comprehensive-test-engineer | T51_3 | code-implementer | `bugs_found AND test_iteration < 3` |
 | comprehensive-test-engineer | T51_6 | devops-infrastructure-engineer | `tests_pass OR test_iteration >= 3 OR NOT bugs_found` |
 | performance-analyst | T52_3 | code-implementer | `bottlenecks_found AND performance_iteration < 3` |
@@ -598,7 +610,7 @@ Example: T_SEC_PASS forwards `source_code` from code-implementer to code-reviewe
 
 ## User Interaction
 
-Agents may need to ask the user questions (e.g., business-analyst conducting interviews, project-manager clarifying requirements).
+Agents may need to ask the user questions (e.g., business-analyst conducting interviews, project-manager clarifying requirements, or any agent facing uncertainty about approach).
 
 ### Platform Reality (same on BOTH platforms)
 
@@ -609,19 +621,30 @@ Sub-agents CANNOT ask the user questions directly:
 
 The orchestrator (main session) MUST relay questions on both platforms. The question tools (`AskUserQuestion` in Claude Code, `ask_user_question` in Qwen Code) are available in the MAIN session — use them there.
 
+### When Agents MUST Ask (All 12 Agents)
+
+Every agent has the "Ask User When Uncertain" section. Agents MUST return `needs_user_input: true` when:
+
+1. **Multiple viable approaches** — 2+ equally valid paths, present with pros/cons
+2. **Unknown domain specifics** — entity names, business rules, config values not derivable from code
+3. **Architectural trade-offs** — significant consequences (performance vs readability, etc.)
+4. **Destructive operations** — before deleting files, overwriting configs
+
+Format: 2-3 options with descriptions + user can provide their own solution.
+
 ### Relay Protocol (P1 in workflow.yaml)
 
 When an agent returns `needs_user_input: true`:
 1. This is NOT a routing event — do NOT evaluate transitions against this result
 2. Extract the `questions` array from the result
-3. Ask the user each question from the main session (batch if possible)
+3. Ask the user each question from the main session (batch if possible), presenting options
 4. Re-launch the SAME agent with: `"User answers: q1='...', q2='...'. Continue from round N."`
 5. The agent resumes from where it left off
 6. Evaluate transitions only after the agent returns a result WITHOUT `needs_user_input`
 
 For business-analyst: `task_type` is REQUIRED in every result (including `needs_user_input` results) — T_BA_EXIT/T_BA_RESEARCH route on it (protocol P2 in workflow.yaml).
 
-**Note:** Only business-analyst typically requires multi-round interviews. Other agents rarely need user input.
+**Note:** Business-analyst uses multi-round interviews. Other agents use `needs_user_input` for one-off decisions when facing uncertainty.
 
 
 ---
