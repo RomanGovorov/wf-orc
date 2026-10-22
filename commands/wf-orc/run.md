@@ -402,6 +402,7 @@ The workflow ends when `project-manager` returns `workflow_complete: true` (afte
 | project-manager | T01_EXPRESS | code-implementer | `backlog_approved AND express_lane` |
 | project-manager | T70_REV | tech-docs-writer | `documentation_needs_revision AND documentation_iteration < 3` |
 | project-manager | T_PM_COMPLETE | _terminal | `documentation_complete OR documentation_iteration >= 3` |
+| project-manager | T_PM_FORCE_TERMINATE | _terminal | `NOT backlog_approved AND NOT express_lane AND NOT documentation_complete AND NOT documentation_needs_revision` |
 | architecture-planner | T12a | security-auditor | `security_requirements_exist AND NOT all_audits_complete` |
 | architecture-planner | T12b | ui-ux-accessibility-specialist | `ui_needed AND NOT all_audits_complete` |
 | architecture-planner | T12c | data-engineering-architect | `data_design_needed AND NOT all_audits_complete` |
@@ -425,20 +426,21 @@ The workflow ends when `project-manager` returns `workflow_complete: true` (afte
 | code-reviewer | T43 | code-implementer | `issues_found AND NOT test_fix_review AND NOT perf_fix_review AND code_review_iteration < 3` |
 | code-reviewer | T43_TEST | code-implementer | `test_fix_review AND test_fix_review_iteration < 3` |
 | code-reviewer | T43_PERF | code-implementer | `perf_fix_review AND perf_fix_review_iteration < 3` |
-| code-reviewer | T45a | comprehensive-test-engineer | `code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3` |
-| code-reviewer | T45b | performance-analyst | `code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3` |
-| code-reviewer | T_EXPRESS_TEST | comprehensive-test-engineer | `code_review_pass AND express_lane` |
+| code-reviewer | T45a | comprehensive-test-engineer | `(code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3) AND NOT express_lane` |
+| code-reviewer | T45b | performance-analyst | `(code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3) AND NOT express_lane` |
+| code-reviewer | T_EXPRESS_TEST | comprehensive-test-engineer | `(code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3) AND express_lane` |
 | code-reviewer | T_DEVOPS_REVIEW_FAIL | devops-infrastructure-engineer | `NOT infrastructure_review_pass AND infrastructure_review_iteration < 3` |
 | code-reviewer | T_DEVOPS_REVIEW_PASS | devops-infrastructure-engineer | `infrastructure_review_pass` |
 | code-reviewer | T_DEVOPS_REVIEW_FORCE_PASS | devops-infrastructure-engineer | `NOT infrastructure_review_pass AND infrastructure_review_iteration >= 3` |
 | comprehensive-test-engineer | T_EXPRESS_DONE | project-manager | `(tests_pass OR test_iteration >= 3 OR NOT bugs_found) AND express_lane` |
 | comprehensive-test-engineer | T51_3 | code-implementer | `bugs_found AND test_iteration < 3` |
-| comprehensive-test-engineer | T51_6 | devops-infrastructure-engineer | `tests_pass OR test_iteration >= 3 OR NOT bugs_found` |
+| comprehensive-test-engineer | T51_6 | devops-infrastructure-engineer | `(tests_pass OR test_iteration >= 3 OR NOT bugs_found) AND NOT express_lane` |
 | performance-analyst | T52_3 | code-implementer | `bottlenecks_found AND performance_iteration < 3` |
 | performance-analyst | T52_6 | devops-infrastructure-engineer | `performance_pass OR performance_iteration >= 3 OR NOT bottlenecks_found` |
 | devops-infrastructure-engineer | T67 | tech-docs-writer | `NOT infrastructure_code_needs_review OR infrastructure_review_iteration >= 3` |
 | devops-infrastructure-engineer | T_DEVOPS_REVIEW | code-reviewer | `infrastructure_code_needs_review AND infrastructure_review_iteration < 3` |
 | tech-docs-writer | T70 | project-manager | `documentation_complete OR documentation_iteration >= 3` |
+| tech-docs-writer | T70_RETRY | tech-docs-writer | `NOT documentation_complete AND documentation_iteration < 3` |
 
 > **Note:** BA-transitions (`T_BA_EXIT`, `T_BA_RESEARCH`) are deliberately excluded from this map — they apply only to the `/wf-orc:full` and `/wf-orc:research` entry flows and are documented in `workflow.yaml`.
 

@@ -41,6 +41,9 @@ version: "0.6.5"
 # │                             │                              │ documentation_iteration < 3         │
 # │ project-manager             │ T_PM_COMPLETE → _terminal    │ documentation_complete OR          │
 # │                             │                              │ documentation_iteration >= 3        │
+# │ project-manager             │ T_PM_FORCE_TERMINATE → _terminal │ NOT backlog_approved AND NOT    │
+# │                             │                              │ express_lane AND NOT doc_complete   │
+# │                             │                              │ AND NOT doc_needs_revision         │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ architecture-planner        │ T12a → security-auditor      │ architecture doc mentions security │
 # │                             │                              │ requirements AND not all audits    │
@@ -90,8 +93,12 @@ version: "0.6.5"
 # │                             │                              │ test_fix_review_iteration < 3      │
 # │                             │ T43_PERF → code-implementer  │ perf_fix_review AND         │
 # │                             │                              │ perf_fix_review_iteration < 3      │
-# │                             │ T45a → comprehensive-test-engineer         │ code_review_pass OR iter >= 3 │
-# │                             │ T45b → performance-analyst   │ code_review_pass OR iter >= 3 │
+# │                             │ T45a → comprehensive-test-engineer         │ (code_review_pass OR iter >= 3) │
+# │                             │                              │ AND NOT express_lane         │
+# │                             │ T45b → performance-analyst   │ (code_review_pass OR iter >= 3) │
+# │                             │                              │ AND NOT express_lane         │
+# │                             │ T_EXPRESS_TEST → test-engineer│ (code_review_pass OR iter >= 3) │
+# │                             │                              │ AND express_lane             │
 # │                             │ T_DEVOPS_REVIEW_PASS         │ infrastructure_review_pass  │
 # │                             │ → devops-infrastructure-engineer            │                                  │
 # │                             │ T_DEVOPS_REVIEW_FAIL         │ NOT infrastructure_review_pass     │
@@ -100,7 +107,10 @@ version: "0.6.5"
 # │                             │ → devops-infrastructure-engineer            │ AND iter >= 3                    │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ comprehensive-test-engineer │ T51_3 → code-implementer     │ bugs_found AND iter < 3     │
-# │                             │ T51_6 → devops-infrastructure-engineer │ tests_pass OR iter >= 3 │
+# │                             │ T51_6 → devops-infrastructure-engineer │ (tests_pass OR iter >= 3)  │
+# │                             │                              │ AND NOT express_lane         │
+# │                             │ T_EXPRESS_DONE → project-manager │ (tests_pass OR iter >= 3)    │
+# │                             │                              │ AND express_lane             │
 # │ performance-analyst         │ T52_3 → code-implementer     │ bottlenecks_found AND iter < 3     │
 # │                             │ T52_6 → devops-infrastructure-engineer │ performance_pass OR iter >= 3 │
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
@@ -111,6 +121,8 @@ version: "0.6.5"
 # ├─────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
 # │ tech-docs-writer            │ T70 → project-manager        │ documentation_complete      │
 # │                             │                              │ OR documentation_iteration >= 3    │
+# │                             │ T70_RETRY → tech-docs-writer │ NOT documentation_complete  │
+# │                             │                              │ AND documentation_iteration < 3    │
 # └─────────────────────────────┴──────────────────────────────┴────────────────────────────────────┘
 #
 # KEY RULES:
@@ -577,6 +589,13 @@ transitions:
 # require >= 3, and code_review_pass XOR issues_found per the code-reviewer contract.
 # If both DO match (a reset was missed), the priority above is decisive AND the orchestrator
 # MUST apply RST_APP_REVIEW_ON_T45 immediately (late) before the next code-reviewer evaluation.
+#
+# CONTRACT VIOLATION PRIORITY (code-reviewer returns both code_review_pass AND issues_found):
+# The code-reviewer contract guarantees XOR: exactly one of code_review_pass or issues_found.
+# If both are true simultaneously (contract violation), the following priority applies:
+#   At iter<3: T43 fires (issues_found takes precedence — fix issues first, don't advance)
+#   At iter>=3: T45a/T45b fire (forced pass — workflow must advance, document unresolved issues)
+# This matches the general principle: fix while possible, force-advance when exhausted.
 - id: T43
   from: code-reviewer
   to: code-implementer
@@ -648,7 +667,7 @@ transitions:
 - id: T45a
   from: code-reviewer
   to: comprehensive-test-engineer
-  condition: code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3
+  condition: (code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3) AND NOT express_lane
   artifacts:
   - source_code
   - unit_tests
@@ -663,7 +682,7 @@ transitions:
 - id: T45b
   from: code-reviewer
   to: performance-analyst
-  condition: code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3
+  condition: (code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3) AND NOT express_lane
   artifacts:
   - source_code
   - unit_tests
@@ -682,7 +701,7 @@ transitions:
 - id: T_EXPRESS_TEST
   from: code-reviewer
   to: comprehensive-test-engineer
-  condition: code_review_pass AND express_lane
+  condition: (code_review_pass OR code_review_iteration >= 3 OR test_fix_review_iteration >= 3 OR perf_fix_review_iteration >= 3) AND express_lane
   artifacts:
   - source_code
   - unit_tests
@@ -692,7 +711,8 @@ transitions:
   process: express_lane
   note: >
     Express Lane only. Skips performance-analyst. The orchestrator fires this instead of
-    T45a/T45b when express_lane=true in workflow state.
+    T45a/T45b when express_lane=true in workflow state. Includes forced-pass clauses
+    (iter>=3) matching T45a/T45b — ensures express lane never deadlocks.
 # T_EXPRESS_DONE: Express Lane — comprehensive-test-engineer → project-manager (skips devops, tech-docs).
 # Only fired by the orchestrator when express_lane=true in workflow state.
 # In standard workflow, comprehensive-test-engineer uses T51_6 → devops-infrastructure-engineer.
@@ -726,7 +746,7 @@ transitions:
 - id: T51_6
   from: comprehensive-test-engineer
   to: devops-infrastructure-engineer
-  condition: tests_pass OR test_iteration >= 3 OR NOT bugs_found
+  condition: (tests_pass OR test_iteration >= 3 OR NOT bugs_found) AND NOT express_lane
   artifacts:
   - testing_report
   - coverage_metrics
@@ -786,6 +806,24 @@ transitions:
   - release_notes
   type: serial
   process: main_workflow
+# T70_RETRY: fallback — if TDW returns without documentation_complete (contract violation),
+# re-launch TDW. Counter increments; at iter>=3, T70 fires (forced pass). Prevents deadlock
+# when TDW returns documentation_complete=false AND documentation_iteration < 3.
+- id: T70_RETRY
+  from: tech-docs-writer
+  to: tech-docs-writer
+  condition: NOT documentation_complete AND documentation_iteration < 3
+  artifacts:
+  - api_documentation
+  - user_guides
+  - runbooks
+  - release_notes
+  type: loop
+  process: documentation_review
+  note: >
+    Fallback: re-launch tech-docs-writer if documentation_complete is not set.
+    documentation_iteration increments on each re-launch. At iter>=3, T70 fires
+    (forced pass). Mitigates deadlock from contract violation.
 - id: T70_REV
   from: project-manager
   to: tech-docs-writer
@@ -810,6 +848,20 @@ transitions:
     This transition also covers the forced-pass case (iteration >= 3) where PM
     may still set documentation_needs_revision — treat as protocol violation
     and force-terminate.
+# T_PM_FORCE_TERMINATE: fallback — if PM returns backlog_approved=false (contract violation)
+# and no documentation flags are set, force-terminate. T01/T01_EXPRESS require backlog_approved,
+# T70_REV requires documentation_needs_revision, T_PM_COMPLETE covers iter>=3. This catches
+# the remaining gap: PM returns an unexpected result with no routing flags.
+- id: T_PM_FORCE_TERMINATE
+  from: project-manager
+  to: _terminal
+  condition: NOT backlog_approved AND NOT express_lane AND NOT documentation_complete AND NOT documentation_needs_revision
+  type: terminal
+  process: main_workflow
+  note: >
+    Fallback: force-terminate when PM returns backlog_approved=false (contract violation)
+    and no documentation flags are set. Log as protocol error. T_PM_COMPLETE covers the
+    documentation_iteration>=3 case first — this only fires when iter<3 and all flags absent.
 - id: T_CODE_TO_SEC
   from: code-implementer
   to: security-auditor
